@@ -74,13 +74,13 @@ func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cm
 			m.cursor++
 		}
 	case "enter":
-		if m.cursor < len(m.keys) {
+		if m.cursor >= 0 && m.cursor < len(m.keys) {
 			// Edit existing key
 			m.editFocus = 0
 			m.nameInput.SetValue(m.keys[m.cursor].Name)
 			m.keyInput.SetValue(m.keys[m.cursor].Key)
-		} else {
-			// Add new key
+		} else if m.cursor == -1 || m.cursor >= len(m.keys) {
+			// Add new key (on [Add] button or empty list)
 			m.keys = append(m.keys, clientKey{})
 			m.cursor = len(m.keys) - 1
 			m.editFocus = 0
