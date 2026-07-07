@@ -430,12 +430,26 @@ func (m aggregatorPageModel) renderAddModal() string {
 	if len(items) == 0 {
 		s += "  (no models found)\n"
 	} else {
-		// Show max 10 items
-		maxShow := 10
-		if len(items) < maxShow {
-			maxShow = len(items)
+		// Scrolling window: always show ~5 items around cursor position
+		maxVisible := 5
+		if len(items) < maxVisible {
+			maxVisible = len(items)
 		}
-		for i := 0; i < maxShow; i++ {
+		half := maxVisible / 2
+		start := m.addCursor - half
+		if start < 0 {
+			start = 0
+		}
+		if start+maxVisible > len(items) {
+			start = len(items) - maxVisible
+		}
+
+		// Show indicator if items exist above visible area
+		if start > 0 {
+			s += helpText.Render(fmt.Sprintf("  ↑ %d more up", start)) + "\n"
+		}
+
+		for i := start; i < start+maxVisible; i++ {
 			item := items[i]
 			cursor := "  "
 			if m.addCursor == i {
@@ -445,8 +459,11 @@ func (m aggregatorPageModel) renderAddModal() string {
 				s += cursor + normalStyle.Render(item.provider+"/"+item.model) + "\n"
 			}
 		}
-		if len(items) > maxShow {
-			s += helpText.Render(fmt.Sprintf("  ... %d more", len(items)-maxShow)) + "\n"
+
+		// Show indicator if items exist below visible area
+		remaining := len(items) - (start + maxVisible)
+		if remaining > 0 {
+			s += helpText.Render(fmt.Sprintf("  ↓ %d more down", remaining)) + "\n"
 		}
 	}
 
