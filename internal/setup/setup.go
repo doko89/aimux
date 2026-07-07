@@ -5,145 +5,204 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/lipgloss"
 )
 
 var (
-	titleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.Color("#FAFAFA")).
-				Background(lipgloss.Color("#7D56F4")).
-				Padding(0, 1)
+	sidebarStyle = lipgloss.NewStyle().
+			Width(22).
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#7D56F4")).
+			Padding(0, 1)
 
-	selectedStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("#FFB86C"))
+	activeTabStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFB86C")).
+			Bold(true)
+
+	inactiveTabStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#6272A4"))
 
 	normalStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("#F8F8F2"))
+			Foreground(lipgloss.Color("#F8F8F2"))
 
-	helpStyle = lipgloss.NewStyle().
-					Foreground(lipgloss.Color("#6272A4"))
+	contentStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#444444")).
+			Padding(0, 2).
+			Width(60)
+
+	inputLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#F8F8F2")).
+			Width(12).
+			Bold(true)
+
+	btnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#50FA7B")).
+			Padding(0, 2)
+
+	btnDangerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#000000")).
+			Background(lipgloss.Color("#FF5555")).
+			Padding(0, 2)
+
+	helpText = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#6272A4")).
+			Italic(true)
 )
 
-// Run starts the interactive setup TUI.
 func Run() {
 	cfg := LoadFromExisting()
-	p := tea.NewProgram(newMainMenu(cfg), tea.WithAltScreen())
+	p := tea.NewProgram(newAppModel(cfg), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-// main menu
-type mainMenuModel struct {
-	cfg     *SetupConfig
-	cursor  int
-	choices []string
-	done    bool
-	quit    bool
+// ─── App Model (sidebar + content) ────────────────────────────────
+
+type appModel struct {
+	cfg         *SetupConfig
+	activeTab   int // 0=auth, 1=aggregator, 2=settings
+	authPage    authPageModel
+	aggPage     aggregatorPageModel
+	settingsPage settingsPageModel
+	width       int
+	height      int
 }
 
-func newMainMenu(cfg *SetupConfig) mainMenuModel {
-	return mainMenuModel{
-		cfg: cfg,
-		choices: []string{
-			"Gateway Settings",
-			"Providers",
-			"Model Aggregations",
-			"Routing",
-			"Circuit Breaker",
-			"Rate Limiting",
-			"Auth (API Keys)",
-			"Login (ChatGPT)",
-			"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
-			"Save & Exit",
-		},
+func newAppModel(cfg *SetupConfig) appModel {
+	return appModel{
+		cfg:         cfg,
+		activeTab:   0,
+		authPage:    newAuthPage(cfg),
+		aggPage:     newAggregatorPage(cfg),
+		settingsPage: newSettingsPage(cfg),
 	}
 }
 
-func (m mainMenuModel) Init() tea.Cmd { return nil }
+func (m appModel) Init() tea.Cmd {
+	return textinput.Blink
+}
 
-func (m mainMenuModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "q":
-			m.quit = true
 			return m, tea.Quit
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "down", "j":
-			if m.cursor < len(m.choices)-1 {
-				m.cursor++
-			}
-		case "enter":
-			choice := m.choices[m.cursor]
-			switch choice {
-			case "Save & Exit":
+		}
+	}
+
+	// Route to active page first
+	var cmd tea.Cmd
+	var handled bool
+	switch m.activeTab {
+	case 0:
+		newModel, c := m.authPage.Update(msg)
+		if newPage, ok := newModel.(authPageModel); ok {
+			m.authPage = newPage
+			cmd = c
+			handled = true
+		}
+	case 1:
+		newModel, c := m.aggPage.Update(msg)
+		if newPage, ok := newModel.(aggregatorPageModel); ok {
+			m.aggPage = newPage
+			cmd = c
+			handled = true
+		}
+	case 2:
+		newModel, c := m.settingsPage.Update(msg)
+		if newPage, ok := newModel.(settingsPageModel); ok {
+			m.settingsPage = newPage
+			cmd = c
+			handled = true
+		}
+	}
+
+	if !handled {
+		// Check for tab switching
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "tab":
+				m.activeTab = (m.activeTab + 1) % 3
+				m.authPage.focus = 0
+				m.aggPage.focus = 0
+				m.settingsPage.focus = 0
+				return m, nil
+			case "shift+tab":
+				m.activeTab = (m.activeTab + 2) % 3
+				m.authPage.focus = 0
+				m.aggPage.focus = 0
+				m.settingsPage.focus = 0
+				return m, nil
+			case "s", "S":
 				dir, _ := os.Getwd()
 				if err := Save(m.cfg, dir); err != nil {
 					fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
-				} else {
-					fmt.Println("\n\u2713 Config saved to .env + aggregation.yaml")
 				}
-				m.done = true
 				return m, tea.Quit
-			case "Gateway Settings":
-				return newGatewayModel(m.cfg, &m), nil
-			case "Providers":
-				return newProviderListModel(m.cfg, &m), nil
-			case "Model Aggregations":
-				return newAggregationListModel(m.cfg, &m), nil
-			case "Routing":
-				return newRoutingModel(m.cfg, &m), nil
-			case "Circuit Breaker":
-				return newCircuitBreakerModel(m.cfg, &m), nil
-			case "Rate Limiting":
-				return newRateLimitModel(m.cfg, &m), nil
-			case "Auth (API Keys)":
-				return newAuthModel(m.cfg, &m), nil
-			case "Login (ChatGPT)":
-				return newLoginModel(m.cfg, &m), nil
 			}
 		}
 	}
-	return m, nil
+
+	return m, cmd
 }
 
-func (m mainMenuModel) View() string {
-	if m.quit || m.done {
-		return ""
-	}
-
-	s := titleStyle.Render("  aimux setup  ") + "\n\n"
-	s += helpStyle.Render("  Select a section to configure:\n\n")
-
-	for i, choice := range m.choices {
-		cursor := "  "
-		if m.cursor == i {
-			cursor = selectedStyle.Render("\u25b6 ")
-			choice = selectedStyle.Render(choice)
-		} else {
-			choice = normalStyle.Render(choice)
+func (m appModel) View() string {
+	tabs := []string{" Auth ", " Aggregator ", " Settings "}
+	var sidebar string
+	sidebar += "aimux setup\n\n"
+	for i, t := range tabs {
+		style := inactiveTabStyle
+		prefix := "  "
+		if i == m.activeTab {
+			style = activeTabStyle
+			prefix = "▸ "
 		}
-		s += "  " + cursor + choice + "\n"
+		sidebar += prefix + style.Render(t) + "\n"
+	}
+	sidebar += "\n" + helpText.Render(" tab / shift+tab") + "\n"
+	sidebar += helpText.Render(" s = save & exit") + "\n"
+	sidebar += helpText.Render(" q = quit")
+
+	var content string
+	switch m.activeTab {
+	case 0:
+		content = m.authPage.View()
+	case 1:
+		content = m.aggPage.View()
+	case 2:
+		content = m.settingsPage.View()
 	}
 
-	s += "\n" + helpStyle.Render("  j/k or arrows to navigate | enter to select | q to quit")
-	return s
+	// Layout
+	return lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		sidebarStyle.Render(sidebar),
+		contentStyle.Render(content),
+	)
 }
 
-// backToMenu is a helper that returns a Cmd to go back to main menu.
-func backToMenu() tea.Msg {
-	return backMsg{}
+// ─── Save helper ───────
+
+func saveAndQuit(cfg *SetupConfig) tea.Cmd {
+	return func() tea.Msg {
+		dir, _ := os.Getwd()
+		if err := Save(cfg, dir); err != nil {
+			return saveErrMsg{err.Error()}
+		}
+		return quitMsg{}
+	}
 }
 
-type backMsg struct{}
-
-func isBackMsg(msg tea.Msg) bool {
-	_, ok := msg.(backMsg)
-	return ok
-}
+type quitMsg struct{}
+type saveErrMsg struct{ s string }
