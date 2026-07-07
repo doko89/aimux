@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/joho/godotenv"
 	"gopkg.in/yaml.v3"
 )
 
@@ -205,6 +206,8 @@ func parseKeyList(v string) []string {
 // Load builds the configuration from environment variables, optionally
 // overlaying a YAML file referenced by the CONFIG_FILE env variable.
 func Load() (*Config, error) {
+	_ = godotenv.Load()
+
 	c := &Config{}
 
 	c.Gateway.Host = getEnv("GATEWAY_HOST", "0.0.0.0")
