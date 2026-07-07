@@ -144,18 +144,18 @@ func (m aggregatorPageModel) updateEdit(msg tea.KeyMsg, key string) (aggregatorP
 		case 1:
 			m.focus = 2
 		case 2:
-			// Open strategy modal
 			m.showStrategy = true
 			m.stratCursor = m.strategy
+			return m, nil
 		case 3:
 			m.focus = 4
 		case 4:
-			// Open add model modal
 			m.showAddModal = true
 			m.addCursor = 0
 			m.searchInput.SetValue("")
 			m.searchInput.Focus()
-			m.pickModel = 0
+			m.pickWeight.SetValue("50")
+			return m, nil
 		case 5:
 			m.commitAgg()
 			m.editIdx = -1
