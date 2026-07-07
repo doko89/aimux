@@ -207,9 +207,15 @@ func parseKeyList(v string) []string {
 	return out
 }
 
-// Load builds the configuration from environment variables, optionally
-// overlaying a YAML file referenced by the CONFIG_FILE env variable.
+// Load builds the configuration from config.yaml if it exists,
+// falling back to environment variables.
 func Load() (*Config, error) {
+	// Try loading from config.yaml first
+	if cfg, err := loadFromYAML(); err == nil {
+		return cfg, nil
+	}
+
+	// Fallback to .env + env vars
 	_ = godotenv.Load()
 
 	c := &Config{}
@@ -564,4 +570,111 @@ func hasAggregation(aggs []ModelAggregation, name string) bool {
 		}
 	}
 	return false
+}
+
+// loadFromYAML reads config.yaml and populates Config.
+func loadFromYAML() (*Config, error) {
+	data, err := os.ReadFile("config.yaml")
+	if err != nil {
+		return nil, err
+	}
+
+	var yc struct {
+		Gateway struct {
+			Host  string `yaml:"host"`
+			Port  int    `yaml:"port"`
+			Debug bool   `yaml:"debug"`
+		} `yaml:"gateway"`
+		Routing struct {
+			Strategy        string `yaml:"strategy"`
+			FallbackOnError bool   `yaml:"fallback_on_error"`
+			MaxRetries      int    `yaml:"max_retries"`
+		} `yaml:"routing"`
+		CircuitBreaker struct {
+			FailureThreshold    int     `yaml:"failure_threshold"`
+			CooldownSeconds     float64 `yaml:"cooldown_seconds"`
+			HealthCheckInterval float64 `yaml:"health_check_interval"`
+		} `yaml:"circuit_breaker"`
+		RateLimiting struct {
+			Enabled bool `yaml:"enabled"`
+			RPM     int  `yaml:"rpm"`
+			Burst   int  `yaml:"burst"`
+		} `yaml:"rate_limiting"`
+		Providers []struct {
+			Name            string   `yaml:"name"`
+			Enabled         bool     `yaml:"enabled"`
+			BaseURL         string   `yaml:"base_url"`
+			APIKey          string   `yaml:"api_key"`
+			Model           string   `yaml:"model"`
+			AvailableModels []string `yaml:"available_models"`
+			Weight          int      `yaml:"weight"`
+			Priority        int      `yaml:"priority"`
+			Timeout         int      `yaml:"timeout"`
+			AutoModel       bool     `yaml:"auto_model"`
+			Passthrough     bool     `yaml:"passthrough"`
+		} `yaml:"providers"`
+		ModelAggregations []struct {
+			Name     string `yaml:"name"`
+			Strategy string `yaml:"strategy"`
+			Models   []struct {
+				Provider string `yaml:"provider"`
+				Model    string `yaml:"model"`
+				Weight   int    `yaml:"weight"`
+			} `yaml:"models"`
+		} `yaml:"model_aggregations"`
+	}
+
+	if err := yaml.Unmarshal(data, &yc); err != nil {
+		return nil, err
+	}
+
+	cfg := &Config{}
+	cfg.Gateway.Host = yc.Gateway.Host
+	cfg.Gateway.Port = yc.Gateway.Port
+	cfg.Gateway.Debug = yc.Gateway.Debug
+	cfg.Routing.Strategy = yc.Routing.Strategy
+	cfg.Routing.FallbackOnError = yc.Routing.FallbackOnError
+	cfg.Routing.MaxRetries = yc.Routing.MaxRetries
+	cfg.CircuitBreaker.FailureThreshold = yc.CircuitBreaker.FailureThreshold
+	cfg.CircuitBreaker.CooldownSeconds = yc.CircuitBreaker.CooldownSeconds
+	cfg.CircuitBreaker.HealthCheckInterval = yc.CircuitBreaker.HealthCheckInterval
+	cfg.RateLimit.Enabled = yc.RateLimiting.Enabled
+	cfg.RateLimit.RPM = yc.RateLimiting.RPM
+	cfg.RateLimit.Burst = yc.RateLimiting.Burst
+
+	for _, p := range yc.Providers {
+		if p.Name == "" {
+			continue
+		}
+		cfg.Providers = append(cfg.Providers, ProviderConfig{
+			Name:            p.Name,
+			Enabled:         p.Enabled,
+			BaseURL:         expandEnv(p.BaseURL),
+			APIKey:          expandEnv(p.APIKey),
+			Model:           expandEnv(p.Model),
+			AvailableModels: p.AvailableModels,
+			Weight:          p.Weight,
+			Priority:        p.Priority,
+			Timeout:         p.Timeout,
+			AutoModel:       p.AutoModel,
+			Passthrough:     p.Passthrough,
+		})
+	}
+
+	for _, a := range yc.ModelAggregations {
+		agg := ModelAggregation{Name: a.Name, Strategy: a.Strategy}
+		for _, m := range a.Models {
+			agg.Models = append(agg.Models, ModelAggEntry{
+				Provider: m.Provider,
+				Model:    m.Model,
+				Weight:   m.Weight,
+			})
+		}
+		cfg.ModelAggregations = append(cfg.ModelAggregations, agg)
+	}
+
+	if len(cfg.Providers) == 0 {
+		return nil, fmt.Errorf("no providers configured")
+	}
+	return cfg, nil
 }
