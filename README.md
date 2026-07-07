@@ -7,21 +7,41 @@ Anthropic ↔ OpenAI protocol translation gateway with multi-provider routing an
 - **Protocol bridge** — Accepts Anthropic Messages API, converts to OpenAI Chat Completions
 - **Multi-provider** — Routes to any OpenAI-compatible backend (OpenAI, DeepSeek, Mimo, OpenRouter, etc.)
 - **ChatGPT/Codex provider** — Use your ChatGPT Plus/Pro subscription via OAuth device flow
+- **Interactive setup** — `aimux setup` TUI to configure all providers, aggregations, and settings
 - **Model aggregation** — Virtual models that distribute traffic across providers via weighted, fallback, or round-robin strategies
 - **Circuit breaker** — Automatic failover with health checks and cooldown
 - **Thinking/Reasoning** — Bidirectional conversion between Anthropic thinking blocks and OpenAI reasoning_content
 - **Streaming** — Full SSE streaming support with real-time format conversion
-- **CLI subcommands** — `aimux login`, `aimux version`, `aimux help`
 
 ## CLI
 
 ```bash
-aimux                    # Start the API gateway server
-aimux login chatgpt      # Login with ChatGPT account (OAuth device flow)
-aimux login chatgpt -f   # Force re-login
-aimux version            # Show version
-aimux help               # Show help
+aimux setup               # Interactive configuration TUI (bubbletea)
+aimux server              # Start the API gateway server
+aimux login chatgpt       # Login with ChatGPT account (OAuth device flow)
+aimux login chatgpt -f    # Force re-login
+aimux version             # Show version
+aimux help                # Show help
 ```
+
+### Setup Wizard
+
+```bash
+aimux setup
+```
+
+Interactive TUI to configure everything:
+
+- **Gateway Settings** — host, port, debug mode
+- **Providers** — add/edit/remove providers (OpenAI, Anthropic, DeepSeek, Codex, custom, etc.)
+- **Model Aggregations** — create virtual models with weighted/fallback/round-robin strategies
+- **Routing** — strategy, fallback on error, max retries
+- **Circuit Breaker** — failure threshold, cooldown, health check interval
+- **Rate Limiting** — enabled, RPM, burst
+- **Auth (API Keys)** — manage client API keys
+- **Login (ChatGPT)** — trigger OAuth device flow
+
+Generates `.env` and `aggregation.yaml` files.
 
 ### ChatGPT/Codex Login
 
@@ -48,17 +68,22 @@ After authorization, tokens are saved to `~/.aimux/chatgpt-auth.json` and auto-r
 ## Quick Start
 
 ```bash
-cp .env.example .env    # edit with your API keys
-cp aggregation.example.yaml aggregation.yaml  # configure aggregations
+# Option 1: Interactive setup
 go build -o aimux .
-./aimux
+./aimux setup
+
+# Option 2: Manual config
+cp .env.example .env
+cp aggregation.example.yaml aggregation.yaml
+go build -o aimux .
+./aimux server
 ```
 
 ### With ChatGPT/Codex
 
 ```bash
 ./aimux login chatgpt      # Login with your ChatGPT account
-./aimux                     # Start server — codex provider auto-detected
+./aimux server             # Start server — codex provider auto-detected
 ```
 
 ## Providers
@@ -114,17 +139,7 @@ Strategies: `weighted`, `fallback`, `round_robin`
 
 Providers and routing are configured via environment variables or `config.yaml`. Model aggregations are defined in a separate YAML file (default: `aggregation.yaml`, overridable via `CONFIG_FILE`).
 
-See `.env.example` for all available options and `aggregation.example.yaml` for aggregation setup.
-
-### Codex-Specific Env Vars
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CODEX_ENABLED` | `true` | Enable codex provider (auto-detected from auth file) |
-| `CODEX_MODEL` | `gpt-5.5` | Model to use |
-| `CODEX_WEIGHT` | `40` | Provider weight for routing |
-| `CODEX_PRIORITY` | `1` | Provider priority |
-| `CODEX_TIMEOUT` | `120` | Request timeout in seconds |
+Use `aimux setup` for interactive configuration, or see `.env.example` and `aggregation.example.yaml` for manual setup.
 
 ## Deploy (Linux ARM64)
 

@@ -22,6 +22,7 @@ import (
 	"ai-router/internal/models"
 	"ai-router/internal/providers"
 	"ai-router/internal/router"
+	"ai-router/internal/setup"
 )
 
 type server struct {
@@ -41,9 +42,14 @@ type aggregationState struct {
 }
 
 func main() {
-	// Handle subcommands: aimux login chatgpt
+	// Handle subcommands
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "setup":
+			setup.Run()
+			return
+		case "server":
+			// Fall through to server start below
 		case "login":
 			login.Run(os.Args[2:])
 			return
@@ -53,9 +59,20 @@ func main() {
 		case "help", "--help", "-h":
 			printUsage()
 			return
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\\n\\n", os.Args[1])
+			printUsage()
+			os.Exit(1)
 		}
+	} else {
+		printUsage()
+		return
 	}
 
+	startServer()
+}
+
+func startServer() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -876,18 +893,20 @@ func printUsage() {
 	fmt.Println(`aimux — AI API Gateway with multi-provider routing
 
 Usage:
-  aimux                    Start the API gateway server
-  aimux login <provider>   Authenticate with an AI provider
-  aimux version            Show version
-  aimux help               Show this help
+  aimux setup               Interactive configuration TUI
+  aimux server              Start the API gateway server
+  aimux login <provider>    Authenticate with an AI provider
+  aimux version             Show version
+  aimux help                Show this help
 
 Providers:
   chatgpt    Login via ChatGPT OAuth (for Codex models)`)
 
 	fmt.Println(`
 Examples:
-  aimux login chatgpt        # Login with ChatGPT account
-  aimux login chatgpt --force  # Force re-login
+  aimux setup               # First-time configuration wizard
+  aimux server              # Start the gateway
+  aimux login chatgpt       # Login with ChatGPT account
 
 Server config:
   Set env vars or config.yaml. See README.md for details.`)
