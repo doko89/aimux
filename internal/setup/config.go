@@ -32,17 +32,24 @@ type ProviderModelFlat struct {
 
 // LoadFromExisting reads current .env and aggregation.yaml to populate SetupConfig.
 func LoadFromExisting() *SetupConfig {
+	// If no .env exists, return empty defaults (no providers)
+	if _, err := os.Stat(".env"); os.IsNotExist(err) {
+		return NewDefaults()
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		return NewDefaults()
 	}
 
-	// Only keep providers that have a BaseURL configured (user actually set them up).
-	// config.Load() auto-adds openai/anthropic/codex even if not configured.
 	var providers []ProviderSetup
 	for _, p := range cfg.Providers {
-		if p.BaseURL == "" {
-			continue // skip auto-added defaults with no real config
+		if p.Name == "" || p.BaseURL == "" {
+			continue
+		}
+		// Skip auto-added built-in providers with no API key
+		if p.APIKey == "" && isDefaultBuiltIn(p.Name) {
+			continue
 		}
 		ps := ProviderSetup{ProviderConfig: p}
 		if len(ps.AvailableModels) == 0 {
@@ -77,6 +84,19 @@ func parseEnvModels(name string) []string {
 		}
 	}
 	return out
+}
+
+// isDefaultBuiltIn reports whether the provider is auto-added by config.Load()
+// and not explicitly configured by the user.
+func isDefaultBuiltIn(name string) bool {
+	switch name {
+	case "openai", "anthropic", "deepseek", "openrouter", "ollama":
+		return true
+	case "codex":
+		// Codex auto-detected from auth file — keep it
+		return false
+	}
+	return false
 }
 
 // NewDefaults returns a SetupConfig with sensible defaults.
