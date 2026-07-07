@@ -34,9 +34,10 @@ jobs:
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
 
-          # Create zip archives
+          # Create zip archives (strip .exe suffix for zip name)
           for bin in aimux-linux-amd64 aimux-linux-arm64 aimux-darwin-arm64 aimux-darwin-amd64 aimux-windows-amd64.exe; do
-            zip "${bin}-${VERSION}.zip" "$bin"
+            zipname="${bin%.exe}"
+            zip "${zipname}-${VERSION}.zip" "$bin"
           done
 
       - name: Create Release
