@@ -64,20 +64,24 @@ func Run() {
 // ─── App Model ────────────────────────────────────────────────────
 
 type appModel struct {
-	cfg         *SetupConfig
-	activeTab   int
-	auth        authPageModel
-	agg         aggregatorPageModel
-	settings    settingsPageModel
+	cfg            *SetupConfig
+	sidebarFocus   bool // true=sidebar focused, false=content focused
+	activeTab      int  // 0=auth, 1=agg, 2=settings
+	sidebarCursor  int  // selected item in sidebar
+	auth           authPageModel
+	agg            aggregatorPageModel
+	settings       settingsPageModel
 }
 
 func newAppModel(cfg *SetupConfig) appModel {
 	return appModel{
-		cfg:       cfg,
-		activeTab: 0,
-		auth:      newAuthPage(cfg),
-		agg:       newAggregatorPage(cfg),
-		settings:  newSettingsPage(cfg),
+		cfg:           cfg,
+		sidebarFocus:  true,
+		activeTab:     0,
+		sidebarCursor: 0,
+		auth:          newAuthPage(cfg),
+		agg:           newAggregatorPage(cfg),
+		settings:      newSettingsPage(cfg),
 	}
 }
 
@@ -86,32 +90,70 @@ func (m appModel) Init() tea.Cmd {
 }
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Always handle window size and quit
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
 		return m, nil
-	case tea.KeyMsg:
-		// Ctrl+C always quits
-		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
+	}
+	key := keyMsg.String()
+
+	// Ctrl+C always quits
+	if key == "ctrl+c" {
+		return m, tea.Quit
+	}
+
+	// ── Sidebar focused ──
+	if m.sidebarFocus {
+		return m.updateSidebar(key)
+	}
+
+	// ── Content focused ──
+	return m.updateContent(keyMsg, key)
+}
+
+func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "up", "k":
+		if m.sidebarCursor > 0 {
+			m.sidebarCursor--
+			m.activeTab = m.sidebarCursor
 		}
-		// Tab switching
-		if msg.String() == "tab" && !m.isEditingActive() {
-			m.activeTab = (m.activeTab + 1) % 3
-			return m, nil
+	case "down", "j":
+		if m.sidebarCursor < 2 {
+			m.sidebarCursor++
+			m.activeTab = m.sidebarCursor
 		}
-		// Save & quit
-		if msg.String() == "s" && !m.isEditingActive() {
-			dir, _ := os.Getwd()
-			if err := Save(m.cfg, dir); err != nil {
-				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
-			}
-			return m, tea.Quit
+	case "tab":
+		// Switch to content area
+		m.sidebarFocus = false
+	case "enter":
+		// Also switch to content on enter
+		m.sidebarFocus = false
+	case "s":
+		dir, _ := os.Getwd()
+		if err := Save(m.cfg, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
 		}
-		// Quit
-		if msg.String() == "q" && !m.isEditingActive() {
-			return m, tea.Quit
+		return m, tea.Quit
+	case "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m appModel) updateContent(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "tab":
+		// Switch back to sidebar
+		m.sidebarFocus = true
+		return m, nil
+	case "s":
+		dir, _ := os.Getwd()
+		if err := Save(m.cfg, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
 		}
+		return m, tea.Quit
+	case "q":
+		return m, tea.Quit
 	}
 
 	// Route to active page
@@ -127,18 +169,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m appModel) isEditingActive() bool {
-	switch m.activeTab {
-	case 0:
-		return m.auth.editIdx >= 0
-	case 1:
-		return m.agg.editIdx >= 0
-	case 2:
-		return m.settings.isEditing()
-	}
-	return false
-}
-
 func (m appModel) View() string {
 	tabs := []string{" Auth ", " Aggregator ", " Settings "}
 	var sidebar string
@@ -152,9 +182,19 @@ func (m appModel) View() string {
 		}
 		sidebar += prefix + style.Render(t) + "\n"
 	}
-	sidebar += "\n" + helpText.Render("  tab: switch page") + "\n"
-	sidebar += helpText.Render("  s:   save & exit") + "\n"
-	sidebar += helpText.Render("  q:   quit (outside edit)")
+
+	// Help text changes based on focus
+	if m.sidebarFocus {
+		sidebar += "\n" + helpText.Render("  ↑↓: navigate") + "\n"
+		sidebar += helpText.Render("  tab: content") + "\n"
+		sidebar += helpText.Render("  s:   save") + "\n"
+		sidebar += helpText.Render("  q:   quit")
+	} else {
+		sidebar += "\n" + helpText.Render("  tab: sidebar") + "\n"
+		sidebar += helpText.Render("  ↑↓: navigate fields") + "\n"
+		sidebar += helpText.Render("  s:   save") + "\n"
+		sidebar += helpText.Render("  q:   quit")
+	}
 
 	var content string
 	switch m.activeTab {
