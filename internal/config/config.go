@@ -80,6 +80,7 @@ type ProviderConfig struct {
 	BaseURL          string
 	APIKey           string
 	Model            string
+	AvailableModels  []string // list of available models (fetched or configured)
 	Weight           int
 	Priority         int
 	Timeout          int
@@ -97,6 +98,7 @@ type yamlProvider struct {
 	BaseURL          string  `yaml:"base_url"`
 	APIKey           string  `yaml:"api_key"`
 	Model            string  `yaml:"model"`
+	AvailableModels  string  `yaml:"available_models"`
 	Weight           int     `yaml:"weight"`
 	Priority         int     `yaml:"priority"`
 	Timeout          int     `yaml:"timeout"`
@@ -411,6 +413,7 @@ func defaultProviders() []ProviderConfig {
 			BaseURL:          baseURL,
 			APIKey:           os.Getenv(up + "_API_KEY"),
 			Model:            model,
+			AvailableModels:  parseStringList(os.Getenv(up + "_AVAILABLE_MODELS")),
 			Weight:           getInt(up+"_WEIGHT", 10),
 			Priority:         getInt(up+"_PRIORITY", 6),
 			Timeout:          getInt(up+"_TIMEOUT", 120),
@@ -473,6 +476,7 @@ func (c *Config) overlayYAML(path string) error {
 				BaseURL:          p.BaseURL,
 				APIKey:           expandEnv(p.APIKey),
 				Model:            expandEnv(p.Model),
+				AvailableModels:  parseStringList(expandEnv(p.AvailableModels)),
 				Weight:           p.Weight,
 				Priority:         p.Priority,
 				Timeout:          p.Timeout,
@@ -503,6 +507,22 @@ func expandEnv(s string) string {
 		return os.ExpandEnv(s)
 	}
 	return s
+}
+
+// parseStringList splits a comma-separated string into a trimmed slice.
+func parseStringList(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 // codexAuthExists checks if ~/.aimux/chatgpt-auth.json exists and is valid.

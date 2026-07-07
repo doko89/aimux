@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"os"
 	"strings"
 
 	"ai-router/internal/config"
@@ -38,7 +39,12 @@ func LoadFromExisting() *SetupConfig {
 
 	providers := make([]ProviderSetup, len(cfg.Providers))
 	for i, p := range cfg.Providers {
-		providers[i] = ProviderSetup{ProviderConfig: p}
+		ps := ProviderSetup{ProviderConfig: p}
+		// If AvailableModels not set from config, try reading from env var
+		if len(ps.AvailableModels) == 0 {
+			ps.AvailableModels = parseEnvModels(p.Name)
+		}
+		providers[i] = ps
 	}
 
 	return &SetupConfig{
@@ -50,6 +56,23 @@ func LoadFromExisting() *SetupConfig {
 		RateLimit:      cfg.RateLimit,
 		Auth:           cfg.Auth,
 	}
+}
+
+// parseEnvModels reads <PREFIX>_AVAILABLE_MODELS from environment.
+func parseEnvModels(name string) []string {
+	prefix := ProviderPrefix(name)
+	val := os.Getenv(prefix + "_AVAILABLE_MODELS")
+	if val == "" {
+		return nil
+	}
+	var out []string
+	for _, s := range strings.Split(val, ",") {
+		s = strings.TrimSpace(s)
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // NewDefaults returns a SetupConfig with sensible defaults.
