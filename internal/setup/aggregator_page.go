@@ -151,6 +151,7 @@ func (m aggregatorPageModel) updateEdit(msg tea.KeyMsg, key string) (aggregatorP
 			m.focus = 4
 		case 4:
 			m.showAddModal = true
+			m.addPhase = true
 			m.addCursor = 0
 			m.searchInput.SetValue("")
 			m.searchInput.Focus()

@@ -87,7 +87,7 @@ type yamlProvConfig struct {
 	BaseURL         string   `yaml:"base_url"`
 	APIKey          string   `yaml:"api_key"`
 	Model           string   `yaml:"model"`
-	AvailableModels []string `yaml:"available_models,omitempty"`
+	AvailableModels []string `yaml:"available_models"`
 	Weight          int      `yaml:"weight"`
 	Priority        int      `yaml:"priority"`
 	Timeout         int      `yaml:"timeout"`
