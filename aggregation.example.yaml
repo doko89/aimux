@@ -9,6 +9,16 @@
 # the request to that provider's model.
 
 model_aggregations:
+  # ---- Codex (ChatGPT subscription) ----
+  # Requires: aimux login chatgpt
+  # Uses GPT-5.5 from your ChatGPT Plus/Pro subscription.
+  - name: codex
+    strategy: weighted
+    models:
+      - provider: codex
+        model: gpt-5.5
+        weight: 100
+
   # ---- Weighted strategy ----
   # Distributes traffic proportionally by weight.
   # "flash" virtual model routes 70% to mimo, 15% each to opencode/opencode2.

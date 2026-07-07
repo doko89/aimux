@@ -17,6 +17,7 @@ import (
 	"ai-router/internal/config"
 	"ai-router/internal/converters"
 	"ai-router/internal/health"
+	"ai-router/internal/login"
 	"ai-router/internal/middleware"
 	"ai-router/internal/models"
 	"ai-router/internal/providers"
@@ -40,6 +41,21 @@ type aggregationState struct {
 }
 
 func main() {
+	// Handle subcommands: aimux login chatgpt
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "login":
+			login.Run(os.Args[2:])
+			return
+		case "version", "--version", "-v":
+			fmt.Println("aimux v0.1.0")
+			return
+		case "help", "--help", "-h":
+			printUsage()
+			return
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -67,7 +83,18 @@ func main() {
 			passthrough = pc
 			continue
 		}
-		client := providers.NewOpenAIProvider(pc.BaseURL, pc.APIKey, pc.Timeout)
+		// Use CodexProvider for codex (ChatGPT OAuth) provider.
+		var client router.ProviderClient
+		if pc.Name == "codex" {
+			codexClient, err := providers.NewCodexProvider(pc.Timeout)
+			if err != nil {
+				log.Printf("[config] codex provider skipped: %v", err)
+				continue
+			}
+			client = codexClient
+		} else {
+			client = providers.NewOpenAIProvider(pc.BaseURL, pc.APIKey, pc.Timeout)
+		}
 		routerProviders = append(routerProviders, &router.Provider{
 			Name:             pc.Name,
 			BaseURL:          pc.BaseURL,
@@ -843,4 +870,25 @@ func getBoolEnv(key string, def bool) bool {
 		return def
 	}
 	return b
+}
+
+func printUsage() {
+	fmt.Println(`aimux — AI API Gateway with multi-provider routing
+
+Usage:
+  aimux                    Start the API gateway server
+  aimux login <provider>   Authenticate with an AI provider
+  aimux version            Show version
+  aimux help               Show this help
+
+Providers:
+  chatgpt    Login via ChatGPT OAuth (for Codex models)`)
+
+	fmt.Println(`
+Examples:
+  aimux login chatgpt        # Login with ChatGPT account
+  aimux login chatgpt --force  # Force re-login
+
+Server config:
+  Set env vars or config.yaml. See README.md for details.`)
 }

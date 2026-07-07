@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -249,6 +251,18 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Add default model aggregation for codex if provider is available.
+	if hasProvider(c.Providers, "codex") && !hasAggregation(c.ModelAggregations, "codex") {
+		c.ModelAggregations = append(c.ModelAggregations, ModelAggregation{
+			Name:     "codex",
+			Strategy: "weighted",
+			Models: []ModelAggEntry{
+				{Provider: "codex", Model: getEnv("CODEX_MODEL", "gpt-5.5"), Weight: 100},
+			},
+		})
+		log.Printf("[config] model aggregation 'codex' auto-configured (gpt-5.5)")
+	}
+
 	// Validate.
 	if len(c.Providers) == 0 {
 		return nil, fmt.Errorf("no providers configured")
@@ -343,6 +357,25 @@ func defaultProviders() []ProviderConfig {
 		"OPENAI": true, "ANTHROPIC": true, "DEEPSEEK": true,
 		"OPENROUTER": true, "OLLAMA": true,
 	}
+
+	// Auto-detect Codex provider from ~/.aimux/chatgpt-auth.json.
+	if getBool("CODEX_ENABLED", true) {
+		if codexAuthExists() {
+			out = append(out, ProviderConfig{
+				Name:             "codex",
+				Enabled:          true,
+				BaseURL:          "https://chatgpt.com/backend-api/codex",
+				Model:            getEnv("CODEX_MODEL", "gpt-5.5"),
+				Weight:           getInt("CODEX_WEIGHT", 40),
+				Priority:         getInt("CODEX_PRIORITY", 1),
+				Timeout:          getInt("CODEX_TIMEOUT", 120),
+				FailureThreshold: threshold,
+				CooldownSeconds:  cooldown,
+			})
+			log.Printf("[config] codex provider auto-detected (auth found)")
+		}
+	}
+	handled["CODEX"] = true
 	for _, n := range strings.Split(getEnv("EXTRA_PROVIDERS", ""), ",") {
 		if p := strings.TrimSpace(strings.ToUpper(n)); p != "" {
 			handled[p] = true
@@ -470,4 +503,45 @@ func expandEnv(s string) string {
 		return os.ExpandEnv(s)
 	}
 	return s
+}
+
+// codexAuthExists checks if ~/.aimux/chatgpt-auth.json exists and is valid.
+func codexAuthExists() bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	path := filepath.Join(home, ".aimux", "chatgpt-auth.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var auth struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(data, &auth); err != nil {
+		return false
+	}
+	return auth.AccessToken != "" || auth.RefreshToken != ""
+}
+
+// hasProvider reports whether a provider with the given name exists.
+func hasProvider(providers []ProviderConfig, name string) bool {
+	for _, p := range providers {
+		if p.Name == name && p.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAggregation reports whether an aggregation with the given name exists.
+func hasAggregation(aggs []ModelAggregation, name string) bool {
+	for _, a := range aggs {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
 }

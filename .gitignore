@@ -1,6 +1,8 @@
 # Binaries
 ai-router
 ai-router-linux-arm64
+aimux
+aimux-linux-arm64
 
 # Config with secrets
 aggregation.yaml

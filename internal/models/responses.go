@@ -12,7 +12,7 @@ type ResponsesRequest struct {
 	MaxOutputTokens    int             `json:"max_output_tokens,omitempty"`
 	Stream             bool            `json:"stream,omitempty"`
 	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-	Store              bool            `json:"store,omitempty"`
+	Store              bool              `json:"store"`
 	Tools              []interface{}   `json:"tools,omitempty"`
 	ToolChoice         interface{}     `json:"tool_choice,omitempty"`
 	Reasoning          *ResponsesReasoning `json:"reasoning,omitempty"`
