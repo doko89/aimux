@@ -6,6 +6,7 @@ import (
 
 	"ai-router/internal/config"
 	"github.com/charmbracelet/bubbles/textinput"
+	"gopkg.in/yaml.v3"
 )
 
 // mkInput creates a textinput.Model with value and placeholder set.
@@ -67,11 +68,17 @@ func LoadFromExisting() *SetupConfig {
 		providers = append(providers, ps)
 	}
 
+	// Read aggregations directly from aggregation.yaml if not loaded via config
+	aggs := cfg.ModelAggregations
+	if len(aggs) == 0 {
+		aggs = loadAggregationYAML()
+	}
+
 	return &SetupConfig{
 		Gateway:        cfg.Gateway,
 		Routing:        cfg.Routing,
 		Providers:      providers,
-		Aggregations:   cfg.ModelAggregations,
+		Aggregations:   aggs,
 		CircuitBreaker: cfg.CircuitBreaker,
 		RateLimit:      cfg.RateLimit,
 		Auth:           cfg.Auth,
@@ -102,10 +109,44 @@ func isDefaultBuiltIn(name string) bool {
 	case "openai", "anthropic", "deepseek", "openrouter", "ollama":
 		return true
 	case "codex":
-		// Codex auto-detected from auth file — keep it
 		return false
 	}
 	return false
+}
+
+// loadAggregationYAML reads aggregation.yaml directly from the current directory.
+func loadAggregationYAML() []config.ModelAggregation {
+	data, err := os.ReadFile("aggregation.yaml")
+	if err != nil {
+		return nil
+	}
+
+	var file struct {
+		ModelAggregations []struct {
+			Name     string `yaml:"name"`
+			Strategy string `yaml:"strategy"`
+			Models   []struct {
+				Provider string `yaml:"provider"`
+				Model    string `yaml:"model"`
+				Weight   int    `yaml:"weight"`
+			} `yaml:"models"`
+		} `yaml:"model_aggregations"`
+	}
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		return nil
+	}
+
+	var out []config.ModelAggregation
+	for _, a := range file.ModelAggregations {
+		agg := config.ModelAggregation{Name: a.Name, Strategy: a.Strategy}
+		for _, m := range a.Models {
+			agg.Models = append(agg.Models, config.ModelAggEntry{
+				Provider: m.Provider, Model: m.Model, Weight: m.Weight,
+			})
+		}
+		out = append(out, agg)
+	}
+	return out
 }
 
 // NewDefaults returns a SetupConfig with sensible defaults.
