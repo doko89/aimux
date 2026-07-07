@@ -170,7 +170,7 @@ func chatToResponsesRequest(req models.ChatCompletionRequest) models.ResponsesRe
 
 	// Reasoning effort.
 	if req.ReasoningEffort != "" {
-		out.Reasoning = &models.ResponsesReasoning{Effort: req.ReasoningEffort}
+		out.Reasoning = &models.ResponsesReasoning{Effort: &req.ReasoningEffort}
 	}
 
 	// Temperature / top_p.

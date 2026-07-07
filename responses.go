@@ -96,8 +96,8 @@ func convertResponsesToChat(req *models.ResponsesRequest) (*models.ChatCompletio
 		out.TopP = req.TopP
 	}
 
-	if req.Reasoning != nil && req.Reasoning.Effort != "" {
-		switch req.Reasoning.Effort {
+	if req.Reasoning != nil && req.Reasoning.Effort != nil && *req.Reasoning.Effort != "" {
+		switch *req.Reasoning.Effort {
 		case "low":
 			out.ReasoningEffort = "low"
 		case "medium":
