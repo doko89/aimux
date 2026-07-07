@@ -14,16 +14,13 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 )
 
-// ─── Auth Page ────────────────────────────────────────────────────
-
 type authPageModel struct {
 	cfg          *SetupConfig
 	editIdx      int // -1 = list mode
-	focus        int // 0=list, 1=name, 2=baseurl, 3=apikey, 4=models
+	focus        int // 0=list, 1=name, 2=baseurl, 3=apikey, 4=fetchBtn, 5=testBtn
 	name         textinput.Model
 	baseURL      textinput.Model
 	apiKey       textinput.Model
-	models       textinput.Model
 	providerList int
 	statusMsg    string
 	fetching     bool
@@ -36,7 +33,6 @@ func newAuthPage(cfg *SetupConfig) authPageModel {
 		name:    mkInput("", "provider-name"),
 		baseURL: mkInput("", "https://api.example.com/v1"),
 		apiKey:  mkInput("", "sk-..."),
-		models:  mkInput("", "model1,model2"),
 	}
 }
 
@@ -50,7 +46,6 @@ func (m authPageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea.Cmd) {
 	m.cfg = cfg
 
-	// Handle async results
 	switch msg := msg.(type) {
 	case fetchModelsDoneMsg:
 		m.fetching = false
@@ -60,7 +55,6 @@ func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea
 			m.statusMsg = fmt.Sprintf("✓ Found %d models", len(msg.models))
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 				m.cfg.Providers[m.editIdx].AvailableModels = msg.models
-				m.models.SetValue(strings.Join(msg.models, ","))
 			}
 		}
 		return m, nil
@@ -75,23 +69,18 @@ func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea
 	}
 
 	keyMsg, ok := msg.(tea.KeyMsg)
-	if !ok {
+	if !ok || m.fetching {
 		return m, nil
 	}
-	if m.fetching {
-		return m, nil
-	}
-
 	key := keyMsg.String()
 
-	// ── EDIT MODE ──
 	if m.editIdx >= 0 {
 		return m.updateEdit(keyMsg, key)
 	}
-
-	// ── LIST MODE ──
 	return m.updateList(key)
 }
+
+// ── LIST MODE ──
 
 func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 	count := len(m.cfg.Providers)
@@ -109,7 +98,6 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 			m.editIdx = m.providerList
 			m.loadToFields()
 			m.focus = 1
-			m.name.Focus()
 		}
 	case "a":
 		m.editIdx = count
@@ -119,9 +107,7 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 		m.name.SetValue("")
 		m.baseURL.SetValue("")
 		m.apiKey.SetValue("")
-		m.models.SetValue("")
 		m.focus = 1
-		m.name.Focus()
 	case "d", "delete":
 		if count > 0 && m.providerList < count {
 			m.cfg.Providers = append(m.cfg.Providers[:m.providerList], m.cfg.Providers[m.providerList+1:]...)
@@ -133,19 +119,21 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 	return m, nil
 }
 
+// ── EDIT MODE ──
+
 func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, tea.Cmd) {
-	// Navigation keys — handle FIRST, never send to textinput
+	// Nav keys — handle first, return immediately
 	switch key {
 	case "up", "k":
 		if m.focus > 1 {
 			m.focus--
-			m.focusInput()
+			m.blurAll()
 		}
 		return m, nil
 	case "down", "j":
-		if m.focus < 4 {
+		if m.focus < 5 {
 			m.focus++
-			m.focusInput()
+			m.blurAll()
 		}
 		return m, nil
 	case "esc":
@@ -154,50 +142,52 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 		m.focus = 0
 		return m, nil
 	case "tab":
-		if m.focus < 4 {
+		if m.focus < 5 {
 			m.focus++
 		} else {
 			m.commitEdit()
 			m.editIdx = -1
 			m.focus = 0
 		}
-		m.focusInput()
+		m.blurAll()
 		return m, nil
 	case "shift+tab":
 		if m.focus > 1 {
 			m.focus--
 		}
-		m.focusInput()
+		m.blurAll()
 		return m, nil
 	case "enter":
-		// For text fields, enter moves to next; on last field, save
-		if m.focus < 4 {
-			m.focus++
-			m.focusInput()
-		} else {
-			m.commitEdit()
-			m.editIdx = -1
-			m.focus = 0
+		if m.focus == 4 {
+			// Fetch Model button
+			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
+				m.fetching = true
+				m.statusMsg = "Fetching..."
+				p := m.cfg.Providers[m.editIdx]
+				return m, fetchModelsCmd(p.BaseURL, p.APIKey)
+			}
+		} else if m.focus == 5 {
+			// Test button
+			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
+				m.fetching = true
+				m.statusMsg = "Testing..."
+				p := m.cfg.Providers[m.editIdx]
+				return m, testProviderCmd(p.BaseURL, p.APIKey)
+			}
+		} else if m.focus < 4 {
+			// Move to next field
+			if m.focus < 3 {
+				m.focus++
+				m.blurAll()
+			} else {
+				m.focus = 4 // jump to fetch button
+			}
 		}
 		return m, nil
-	case "e":
-		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
-			m.fetching = true
-			m.statusMsg = "Fetching..."
-			p := m.cfg.Providers[m.editIdx]
-			return m, fetchModelsCmd(p.BaseURL, p.APIKey)
-		}
-	case "t":
-		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
-			m.fetching = true
-			m.statusMsg = "Testing..."
-			p := m.cfg.Providers[m.editIdx]
-			return m, testProviderCmd(p.BaseURL, p.APIKey)
-		}
 	}
 
-	// All other keys (typing, left/right, backspace) → textinput
-	if m.focus >= 1 && m.focus <= 4 {
+	// Non-nav keys → route to active textinput (focus 1-3 only)
+	if m.focus >= 1 && m.focus <= 3 {
 		m.routeToInput(msg)
 	}
 	return m, nil
@@ -211,16 +201,13 @@ func (m *authPageModel) routeToInput(msg tea.KeyMsg) {
 		m.baseURL, _ = m.baseURL.Update(msg)
 	case 3:
 		m.apiKey, _ = m.apiKey.Update(msg)
-	case 4:
-		m.models, _ = m.models.Update(msg)
 	}
 }
 
-func (m *authPageModel) focusInput() {
+func (m *authPageModel) blurAll() {
 	m.name.Blur()
 	m.baseURL.Blur()
 	m.apiKey.Blur()
-	m.models.Blur()
 	switch m.focus {
 	case 1:
 		m.name.Focus()
@@ -228,8 +215,6 @@ func (m *authPageModel) focusInput() {
 		m.baseURL.Focus()
 	case 3:
 		m.apiKey.Focus()
-	case 4:
-		m.models.Focus()
 	}
 }
 
@@ -241,7 +226,6 @@ func (m *authPageModel) loadToFields() {
 	m.name.SetValue(p.Name)
 	m.baseURL.SetValue(p.BaseURL)
 	m.apiKey.SetValue(p.APIKey)
-	m.models.SetValue(strings.Join(p.AvailableModels, ","))
 }
 
 func (m *authPageModel) commitEdit() {
@@ -262,18 +246,9 @@ func (m *authPageModel) commitEdit() {
 	if p.Timeout == 0 {
 		p.Timeout = 120
 	}
-	modelsRaw := strings.TrimSpace(m.models.Value())
-	if modelsRaw != "" {
-		var ms []string
-		for _, s := range strings.Split(modelsRaw, ",") {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				ms = append(ms, s)
-			}
-		}
-		p.AvailableModels = ms
-	}
 }
+
+// ── VIEW ──
 
 func (m authPageModel) View() string {
 	s := "\n" + inputLabelStyle.Render("Providers") + "\n\n"
@@ -309,20 +284,36 @@ func (m authPageModel) View() string {
 
 	if m.editIdx >= 0 {
 		s += helpText.Render("── Edit Provider ──") + "\n\n"
+
+		// Text fields
 		s += m.renderField("Name", m.name, 1)
 		s += m.renderField("Base URL", m.baseURL, 2)
 		s += m.renderField("API Key", m.apiKey, 3)
-		s += m.renderField("Models", m.models, 4)
 		s += "\n"
-		s += "  " + btnStyle.Render(" e:Fetch ") + "   "
-		s += btnStyle.Render(" t:Test ") + "   "
-		s += btnStyle.Render(" esc:Done ") + "\n"
-	} else {
-		s += helpText.Render("enter: edit | a: add | d: remove") + "\n"
-	}
 
-	if m.statusMsg != "" {
-		s += "\n" + m.statusMsg + "\n"
+		// Buttons
+		s += m.renderButton("Fetch Model", 4)
+		s += "   "
+		s += m.renderButton("Test", 5)
+		s += "\n"
+
+		// Models view only
+		s += "\n" + inputLabelStyle.Render("Models")
+		p := m.cfg.Providers[m.editIdx]
+		if len(p.AvailableModels) == 0 {
+			s += " (none)\n"
+		} else {
+			s += fmt.Sprintf(" (%d)\n", len(p.AvailableModels))
+			for _, m := range p.AvailableModels {
+				s += "    " + normalStyle.Render(m) + "\n"
+			}
+		}
+
+		if m.statusMsg != "" {
+			s += "\n" + m.statusMsg + "\n"
+		}
+	} else {
+		s += helpText.Render("enter: edit | a: add | d: remove")
 	}
 
 	return s
@@ -336,7 +327,14 @@ func (m authPageModel) renderField(label string, input textinput.Model, focus in
 	return cursor + inputLabelStyle.Render(label) + input.View() + "\n"
 }
 
-// ─── Commands ─────────────────────────────────────────────────────
+func (m authPageModel) renderButton(label string, focus int) string {
+	if m.focus == focus {
+		return activeTabStyle.Render("▸ [" + label + "]")
+	}
+	return normalStyle.Render("  [" + label + "]")
+}
+
+// ── COMMANDS ──
 
 type fetchModelsDoneMsg struct {
 	models []string
