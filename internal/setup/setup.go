@@ -137,7 +137,7 @@ func (m appModel) isEditing() bool {
 	case 1:
 		return m.agg.editIdx >= 0
 	case 2:
-		return m.credential.cursor >= 0
+		return m.credential.expanded >= 0
 	case 3:
 		return false
 	}
