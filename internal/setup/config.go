@@ -22,10 +22,10 @@ type SetupConfig struct {
 	ClientKeys     []string // client API keys
 }
 
-// ProviderSetup extends ProviderConfig with a list of available models.
+// ProviderSetup wraps ProviderConfig for setup editing.
+// AvailableModels is inherited from ProviderConfig.
 type ProviderSetup struct {
 	config.ProviderConfig
-	AvailableModels []string
 }
 
 // mkInput creates a textinput.Model with value and placeholder set.
