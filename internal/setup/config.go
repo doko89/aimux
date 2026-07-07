@@ -5,7 +5,16 @@ import (
 	"strings"
 
 	"ai-router/internal/config"
+	"github.com/charmbracelet/bubbles/textinput"
 )
+
+// mkInput creates a textinput.Model with value and placeholder set.
+func mkInput(val, placeholder string) textinput.Model {
+	t := textinput.New()
+	t.SetValue(val)
+	t.Placeholder = placeholder
+	return t
+}
 
 // SetupConfig is a mutable mirror of config.Config used during TUI editing.
 type SetupConfig struct {
