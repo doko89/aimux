@@ -49,14 +49,6 @@ func (m aggregatorPageModel) update(msg tea.Msg, cfg *SetupConfig) (aggregatorPa
 	}
 	key := keyMsg.String()
 
-	// Route to text input when editing
-	if m.editIdx >= 0 && !m.addPhase && m.focus == 1 {
-		m.name, _ = m.name.Update(msg)
-	}
-	if m.addPhase && m.focus == 6 {
-		m.weightInput, _ = m.weightInput.Update(msg)
-	}
-
 	count := len(m.cfg.Aggregations)
 
 	// ── ADD MODEL PHASE ──
@@ -66,11 +58,31 @@ func (m aggregatorPageModel) update(msg tea.Msg, cfg *SetupConfig) (aggregatorPa
 
 	// ── EDIT MODE ──
 	if m.editIdx >= 0 {
-		return m.updateEdit(key, count)
+		// In edit mode, navigation keys handled in updateEdit.
+		// Non-nav keys routed to textinput inside updateEdit's tail.
+		updated, cmd := m.updateEdit(key, count)
+		// Route typing to name if focused on name and key wasn't a nav key
+		navKeys := map[string]bool{
+			"up": true, "k": true, "down": true, "j": true,
+			"tab": true, "shift+tab": true, "enter": true, "esc": true, "escape": true,
+			"a": true, "d": true, "x": true, "left": true, "right": true,
+		}
+		if updated.focus == 1 && !navKeys[key] {
+			updated.name, _ = updated.name.Update(keyMsg)
+		}
+		return updated, cmd
 	}
 
 	// ── LIST MODE ──
 	return m.updateList(key, count)
+}
+
+func (m *aggregatorPageModel) focusInput() {
+	m.name.Blur()
+	m.weightInput.Blur()
+	if m.focus == 1 {
+		m.name.Focus()
+	}
 }
 
 func (m aggregatorPageModel) updateList(key string, count int) (aggregatorPageModel, tea.Cmd) {
@@ -115,12 +127,42 @@ func (m aggregatorPageModel) updateList(key string, count int) (aggregatorPageMo
 }
 
 func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageModel, tea.Cmd) {
+	// Navigation keys — handle FIRST, never to textinput
 	switch key {
+	case "up", "k":
+		switch m.focus {
+		case 1:
+			// stay on name
+		case 2:
+			m.focus = 1
+		case 3:
+			if m.modelList > 0 {
+				m.modelList--
+			} else {
+				m.focus = 2
+			}
+		}
+		m.focusInput()
+		return m, nil
+	case "down", "j":
+		switch m.focus {
+		case 1:
+			m.focus = 2
+		case 2:
+			m.focus = 3
+		case 3:
+			if m.modelList < len(m.models)-1 {
+				m.modelList++
+			}
+		}
+		m.focusInput()
+		return m, nil
 	case "esc":
 		m.commitAgg()
 		m.editIdx = -1
 		m.focus = 0
 		m.modelList = 0
+		return m, nil
 	case "tab":
 		switch m.focus {
 		case 1:
@@ -132,10 +174,14 @@ func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageMo
 			m.editIdx = -1
 			m.focus = 0
 		}
+		m.focusInput()
+		return m, nil
 	case "shift+tab":
 		if m.focus > 1 {
 			m.focus--
 		}
+		m.focusInput()
+		return m, nil
 	case "a":
 		if m.focus == 3 {
 			m.addPhase = true
@@ -143,7 +189,9 @@ func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageMo
 			m.pickProv = 0
 			m.pickModel = 0
 			m.weightInput.SetValue("50")
+			m.focusInput()
 		}
+		return m, nil
 	case "d", "x":
 		if m.focus == 3 && m.modelList < len(m.models) {
 			m.models = append(m.models[:m.modelList], m.models[m.modelList+1:]...)
@@ -151,23 +199,32 @@ func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageMo
 				m.modelList--
 			}
 		}
+		return m, nil
 	case "left":
 		if m.focus == 2 && m.strategy > 0 {
 			m.strategy--
 		}
+		return m, nil
 	case "right":
 		if m.focus == 2 && m.strategy < 2 {
 			m.strategy++
 		}
-	case "up", "k":
-		if m.focus == 3 && m.modelList > 0 {
-			m.modelList--
+		return m, nil
+	case "enter":
+		if m.focus == 1 {
+			m.focus = 2
+		} else if m.focus == 2 {
+			m.focus = 3
+		} else if m.focus == 3 {
+			m.commitAgg()
+			m.editIdx = -1
+			m.focus = 0
 		}
-	case "down", "j":
-		if m.focus == 3 && m.modelList < len(m.models)-1 {
-			m.modelList++
-		}
+		m.focusInput()
+		return m, nil
 	}
+
+	// Other keys (typing) → textinput handled by caller
 	return m, nil
 }
 
@@ -177,20 +234,28 @@ func (m aggregatorPageModel) updateAddPhase(key string, msg tea.KeyMsg) (aggrega
 	case "esc":
 		m.addPhase = false
 		m.focus = 3
+		return m, nil
 	case "up", "k":
 		if m.focus == 4 && m.pickProv > 0 {
 			m.pickProv--
 			m.pickModel = 0
 		} else if m.focus == 5 && m.pickModel > 0 {
 			m.pickModel--
+		} else if m.focus == 6 {
+			// move up from weight to model picker
+			m.focus = 5
 		}
+		return m, nil
 	case "down", "j":
 		if m.focus == 4 && m.pickProv < len(m.cfg.Providers)-1 {
 			m.pickProv++
 			m.pickModel = 0
 		} else if m.focus == 5 && m.pickModel < len(modelChoices)-1 {
 			m.pickModel++
+		} else if m.focus == 5 {
+			m.focus = 6
 		}
+		return m, nil
 	case "tab":
 		switch m.focus {
 		case 4:
@@ -202,10 +267,17 @@ func (m aggregatorPageModel) updateAddPhase(key string, msg tea.KeyMsg) (aggrega
 			m.addPhase = false
 			m.focus = 3
 		}
+		return m, nil
 	case "enter":
 		m.addModelEntry()
 		m.addPhase = false
 		m.focus = 3
+		return m, nil
+	}
+
+	// Typing → weight input when focused on weight
+	if m.focus == 6 {
+		m.weightInput, _ = m.weightInput.Update(msg)
 	}
 	return m, nil
 }

@@ -71,21 +71,38 @@ func (m settingsPageModel) update(msg tea.Msg, cfg *SetupConfig) (settingsPageMo
 	}
 	key := keyMsg.String()
 
-	// Route typing to active input first (for nav keys, this is harmless)
-	m.routeInput(keyMsg, key)
-
+	// Navigation keys — handle FIRST, never send to textinput
 	switch key {
-	case "tab":
+	case "up", "k":
+		if m.focus > 0 {
+			m.focus--
+			m.focusCurrent()
+		}
+		return m, nil
+	case "down", "j":
 		n := m.fieldCount()
 		if m.focus < n-1 {
 			m.focus++
 			m.focusCurrent()
+		}
+		return m, nil
+	case "tab":
+		n := m.fieldCount()
+		if m.focus < n-1 {
+			m.focus++
 		} else if m.page < 3 {
 			m.savePage()
 			m.page++
 			m.focus = 0
-			m.focusCurrent()
 		}
+		m.focusCurrent()
+		return m, nil
+	case "shift+tab":
+		if m.focus > 0 {
+			m.focus--
+		}
+		m.focusCurrent()
+		return m, nil
 	case "enter":
 		if m.page == 3 && m.authEdit {
 			if v := m.authNew.Value(); v != "" {
@@ -98,13 +115,15 @@ func (m settingsPageModel) update(msg tea.Msg, cfg *SetupConfig) (settingsPageMo
 			if m.page < 3 {
 				m.page++
 				m.focus = 0
-				m.focusCurrent()
 			}
 		}
+		m.focusCurrent()
+		return m, nil
 	case " ":
 		if m.page == 2 && m.focus == 0 {
 			m.rlEnabled = !m.rlEnabled
 		}
+		return m, nil
 	case "a":
 		if m.page == 3 && !m.authEdit {
 			m.authEdit = true
@@ -112,25 +131,22 @@ func (m settingsPageModel) update(msg tea.Msg, cfg *SetupConfig) (settingsPageMo
 			m.focus = 1
 			m.focusCurrent()
 		}
+		return m, nil
 	case "d", "x", "delete":
 		if m.page == 3 && !m.authEdit && len(m.authKeys) > 0 && m.focus < len(m.authKeys) {
 			m.authKeys = append(m.authKeys[:m.focus], m.authKeys[m.focus+1:]...)
 		}
+		return m, nil
 	}
+
+	// All other keys (typing, left/right, backspace) → textinput
+	m.routeInput(keyMsg, key)
 
 	return m, nil
 }
 
 func (m *settingsPageModel) routeInput(msg tea.KeyMsg, key string) {
-	// navKeys — don't route these to inputs
-	navKeys := map[string]bool{
-		"tab": true, "enter": true, "esc": true, "escape": true,
-		"up": true, "k": true, "down": true, "j": true,
-		" ": true, "a": true, "d": true, "x": true, "delete": true,
-	}
-	if navKeys[key] {
-		return
-	}
+	// navKeys already handled by caller; this is only for typing keys
 	switch m.page {
 	case 0:
 		switch m.focus {

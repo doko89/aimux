@@ -134,33 +134,53 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 }
 
 func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, tea.Cmd) {
-	// Always route to the active textinput first so typing works
-	if m.focus >= 1 && m.focus <= 4 {
-		m.routeToInput(msg)
-	}
-
+	// Navigation keys — handle FIRST, never send to textinput
 	switch key {
-	case "esc":
-		m.commitEdit()
-		m.editIdx = -1
-		m.focus = 0
-	case "tab":
-		if m.focus < 4 {
-			m.focus++
-			m.focusInput()
-		} else {
-			// Done editing
-			m.commitEdit()
-			m.editIdx = -1
-			m.focus = 0
-		}
-	case "shift+tab":
+	case "up", "k":
 		if m.focus > 1 {
 			m.focus--
 			m.focusInput()
 		}
+		return m, nil
+	case "down", "j":
+		if m.focus < 4 {
+			m.focus++
+			m.focusInput()
+		}
+		return m, nil
+	case "esc":
+		m.commitEdit()
+		m.editIdx = -1
+		m.focus = 0
+		return m, nil
+	case "tab":
+		if m.focus < 4 {
+			m.focus++
+		} else {
+			m.commitEdit()
+			m.editIdx = -1
+			m.focus = 0
+		}
+		m.focusInput()
+		return m, nil
+	case "shift+tab":
+		if m.focus > 1 {
+			m.focus--
+		}
+		m.focusInput()
+		return m, nil
+	case "enter":
+		// For text fields, enter moves to next; on last field, save
+		if m.focus < 4 {
+			m.focus++
+			m.focusInput()
+		} else {
+			m.commitEdit()
+			m.editIdx = -1
+			m.focus = 0
+		}
+		return m, nil
 	case "e":
-		// Fetch models
 		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 			m.fetching = true
 			m.statusMsg = "Fetching..."
@@ -168,7 +188,6 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 			return m, fetchModelsCmd(p.BaseURL, p.APIKey)
 		}
 	case "t":
-		// Test connection
 		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 			m.fetching = true
 			m.statusMsg = "Testing..."
@@ -177,6 +196,10 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 		}
 	}
 
+	// All other keys (typing, left/right, backspace) → textinput
+	if m.focus >= 1 && m.focus <= 4 {
+		m.routeToInput(msg)
+	}
 	return m, nil
 }
 
