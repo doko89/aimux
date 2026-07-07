@@ -14,46 +14,43 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 )
 
-// ─── Auth Page: manage providers ──────────────────────────────────
+// ─── Auth Page ────────────────────────────────────────────────────
 
 type authPageModel struct {
-	cfg           *SetupConfig
-	focus         int // 0=provider list, 1=name, 2=baseurl, 3=apikey, 4=buttons
-	editIdx       int // -1 = new provider
-	name          textinput.Model
-	baseURL       textinput.Model
-	apiKey        textinput.Model
-	models        textinput.Model
-	providerList  int
-	statusMsg     string
-	fetching      bool
+	cfg          *SetupConfig
+	editIdx      int // -1 = list mode
+	focus        int // 0=list, 1=name, 2=baseurl, 3=apikey, 4=models
+	name         textinput.Model
+	baseURL      textinput.Model
+	apiKey       textinput.Model
+	models       textinput.Model
+	providerList int
+	statusMsg    string
+	fetching     bool
 }
 
 func newAuthPage(cfg *SetupConfig) authPageModel {
-	n := textinput.New()
-	n.Placeholder = "provider-name"
-	bu := textinput.New()
-	bu.Placeholder = "https://api.example.com/v1"
-	ak := textinput.New()
-	ak.Placeholder = "sk-..."
-	ak.EchoMode = textinput.EchoPassword
-	md := textinput.New()
-	md.Placeholder = "model1,model2,model3"
-
 	return authPageModel{
 		cfg:     cfg,
-		focus:   0,
 		editIdx: -1,
-		name:    n,
-		baseURL: bu,
-		apiKey:  ak,
-		models:  md,
+		name:    mkInput("", "provider-name"),
+		baseURL: mkInput("", "https://api.example.com/v1"),
+		apiKey:  mkInput("", "sk-..."),
+		models:  mkInput("", "model1,model2"),
 	}
 }
 
 func (m authPageModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m authPageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	new, cmd := m.update(msg, m.cfg)
+	return new, cmd
+}
+
+func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea.Cmd) {
+	m.cfg = cfg
+
+	// Handle async results
 	switch msg := msg.(type) {
 	case fetchModelsDoneMsg:
 		m.fetching = false
@@ -72,100 +69,118 @@ func (m authPageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != "" {
 			m.statusMsg = "✗ " + msg.err
 		} else {
-			m.statusMsg = "✓ Connection OK (" + msg.status + ")"
+			m.statusMsg = "✓ OK (" + msg.status + ")"
 		}
 		return m, nil
-	case tea.KeyMsg:
-		if m.fetching {
-			return m, nil
-		}
-		return m.handleKeyMsg(msg)
 	}
-	return m, nil
+
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	if m.fetching {
+		return m, nil
+	}
+
+	key := keyMsg.String()
+
+	// ── EDIT MODE ──
+	if m.editIdx >= 0 {
+		return m.updateEdit(keyMsg, key)
+	}
+
+	// ── LIST MODE ──
+	return m.updateList(key)
 }
 
-func (m authPageModel) handleKeyMsg(msg tea.KeyMsg) (authPageModel, tea.Cmd) {
-	key := msg.String()
-	navKeys := map[string]bool{
-		"tab": true, "shift+tab": true, "up": true, "k": true,
-		"down": true, "j": true, "enter": true, "escape": true, "esc": true,
-		"a": true, "A": true, "d": true, "delete": true, "e": true, "t": true,
-	}
-
-	// If editing and focus is on text input, route non-nav keys to input
-	if m.focus >= 1 && m.focus <= 4 && !navKeys[key] {
-		return m.routeToInput(msg), nil
-	}
-
-	// Navigation keys
+func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
+	count := len(m.cfg.Providers)
 	switch key {
 	case "up", "k":
-		if m.editIdx == -1 && m.providerList > 0 {
+		if m.providerList > 0 {
 			m.providerList--
 		}
 	case "down", "j":
-		if m.editIdx == -1 {
-			max := len(m.cfg.Providers)
-			if m.providerList < max-1 {
-				m.providerList++
-			}
-		}
-	case "tab":
-		if m.editIdx >= 0 {
-			if m.focus < 4 {
-				m.focus++
-			} else {
-				m.focus = 0
-				m.commitEdit()
-				m.editIdx = -1
-			}
-		}
-	case "shift+tab":
-		if m.editIdx >= 0 && m.focus > 0 {
-			m.focus--
+		if m.providerList < count-1 {
+			m.providerList++
 		}
 	case "enter":
-		if m.editIdx == -1 && m.providerList < len(m.cfg.Providers) {
+		if m.providerList < count {
 			m.editIdx = m.providerList
 			m.loadToFields()
 			m.focus = 1
+			m.name.Focus()
 		}
-	case "a", "A":
-		if m.editIdx == -1 {
-			m.newProvider()
-		}
+	case "a":
+		m.editIdx = count
+		m.cfg.Providers = append(m.cfg.Providers, ProviderSetup{
+			ProviderConfig: config.ProviderConfig{Enabled: true, Weight: 10, Priority: 6, Timeout: 120},
+		})
+		m.name.SetValue("")
+		m.baseURL.SetValue("")
+		m.apiKey.SetValue("")
+		m.models.SetValue("")
+		m.focus = 1
+		m.name.Focus()
 	case "d", "delete":
-		if m.editIdx == -1 && m.providerList < len(m.cfg.Providers) {
+		if count > 0 && m.providerList < count {
 			m.cfg.Providers = append(m.cfg.Providers[:m.providerList], m.cfg.Providers[m.providerList+1:]...)
 			if m.providerList >= len(m.cfg.Providers) && m.providerList > 0 {
 				m.providerList--
 			}
 		}
+	}
+	return m, nil
+}
+
+func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, tea.Cmd) {
+	// Always route to the active textinput first so typing works
+	if m.focus >= 1 && m.focus <= 4 {
+		m.routeToInput(msg)
+	}
+
+	switch key {
+	case "esc":
+		m.commitEdit()
+		m.editIdx = -1
+		m.focus = 0
+	case "tab":
+		if m.focus < 4 {
+			m.focus++
+			m.focusInput()
+		} else {
+			// Done editing
+			m.commitEdit()
+			m.editIdx = -1
+			m.focus = 0
+		}
+	case "shift+tab":
+		if m.focus > 1 {
+			m.focus--
+			m.focusInput()
+		}
 	case "e":
+		// Fetch models
 		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 			m.fetching = true
-			m.statusMsg = "Fetching models..."
+			m.statusMsg = "Fetching..."
 			p := m.cfg.Providers[m.editIdx]
 			return m, fetchModelsCmd(p.BaseURL, p.APIKey)
 		}
 	case "t":
+		// Test connection
 		if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 			m.fetching = true
 			m.statusMsg = "Testing..."
 			p := m.cfg.Providers[m.editIdx]
 			return m, testProviderCmd(p.BaseURL, p.APIKey)
 		}
-	case "escape", "esc":
-		if m.editIdx >= 0 {
-			m.commitEdit()
-			m.editIdx = -1
-			m.focus = 0
-		}
 	}
+
 	return m, nil
 }
 
-func (m authPageModel) routeToInput(msg tea.KeyMsg) authPageModel {
+func (m *authPageModel) routeToInput(msg tea.KeyMsg) {
 	switch m.focus {
 	case 1:
 		m.name, _ = m.name.Update(msg)
@@ -176,21 +191,23 @@ func (m authPageModel) routeToInput(msg tea.KeyMsg) authPageModel {
 	case 4:
 		m.models, _ = m.models.Update(msg)
 	}
-	return m
 }
 
-func (m *authPageModel) newProvider() {
-	m.editIdx = len(m.cfg.Providers)
-	m.name.SetValue("")
-	m.baseURL.SetValue("")
-	m.apiKey.SetValue("")
-	m.models.SetValue("")
-	m.focus = 1
-	m.cfg.Providers = append(m.cfg.Providers, ProviderSetup{
-		ProviderConfig: config.ProviderConfig{
-			Enabled: true, Weight: 10, Priority: 6, Timeout: 120,
-		},
-	})
+func (m *authPageModel) focusInput() {
+	m.name.Blur()
+	m.baseURL.Blur()
+	m.apiKey.Blur()
+	m.models.Blur()
+	switch m.focus {
+	case 1:
+		m.name.Focus()
+	case 2:
+		m.baseURL.Focus()
+	case 3:
+		m.apiKey.Focus()
+	case 4:
+		m.models.Focus()
+	}
 }
 
 func (m *authPageModel) loadToFields() {
@@ -236,18 +253,17 @@ func (m *authPageModel) commitEdit() {
 }
 
 func (m authPageModel) View() string {
-	s := "\n"
+	s := "\n" + inputLabelStyle.Render("Providers") + "\n\n"
 
-	s += inputLabelStyle.Render("Providers") + "\n"
 	if len(m.cfg.Providers) == 0 {
 		s += "  (no providers configured)\n"
 	} else {
 		for i, p := range m.cfg.Providers {
 			cursor := "  "
-			indicator := "○"
-			if m.editIdx == i {
+			if m.editIdx == -1 && m.providerList == i {
 				cursor = "▸ "
-				indicator = "●"
+			} else if m.editIdx == i {
+				cursor = "▸ "
 			}
 			enabled := "off"
 			if p.Enabled {
@@ -255,9 +271,9 @@ func (m authPageModel) View() string {
 			}
 			models := ""
 			if len(p.AvailableModels) > 0 {
-				models = fmt.Sprintf(" [%d models]", len(p.AvailableModels))
+				models = fmt.Sprintf(" [%d]", len(p.AvailableModels))
 			}
-			line := fmt.Sprintf("%s %s %s (%s)%s", cursor, indicator, p.Name, enabled, models)
+			line := fmt.Sprintf("%s%s (%s)%s", cursor, p.Name, enabled, models)
 			if m.editIdx == i {
 				s += activeTabStyle.Render(line) + "\n"
 			} else {
@@ -270,28 +286,16 @@ func (m authPageModel) View() string {
 
 	if m.editIdx >= 0 {
 		s += helpText.Render("── Edit Provider ──") + "\n\n"
-		fields := []struct {
-			label string
-			input textinput.Model
-		}{
-			{"Name", m.name},
-			{"Base URL", m.baseURL},
-			{"API Key", m.apiKey},
-			{"Models", m.models},
-		}
-		for idx, f := range fields {
-			cursor := "  "
-			if m.focus == idx+1 {
-				cursor = "▸ "
-			}
-			s += cursor + inputLabelStyle.Render(f.label) + f.input.View() + "\n"
-		}
+		s += m.renderField("Name", m.name, 1)
+		s += m.renderField("Base URL", m.baseURL, 2)
+		s += m.renderField("API Key", m.apiKey, 3)
+		s += m.renderField("Models", m.models, 4)
 		s += "\n"
 		s += "  " + btnStyle.Render(" e:Fetch ") + "   "
 		s += btnStyle.Render(" t:Test ") + "   "
-		s += btnStyle.Render(" esc:Save ") + "\n"
+		s += btnStyle.Render(" esc:Done ") + "\n"
 	} else {
-		s += helpText.Render("a: add | enter: edit | d: remove | s: save all") + "\n"
+		s += helpText.Render("enter: edit | a: add | d: remove") + "\n"
 	}
 
 	if m.statusMsg != "" {
@@ -301,7 +305,15 @@ func (m authPageModel) View() string {
 	return s
 }
 
-// ─── Fetch models command ─────────────────────────────────────────
+func (m authPageModel) renderField(label string, input textinput.Model, focus int) string {
+	cursor := "  "
+	if m.focus == focus {
+		cursor = "▸ "
+	}
+	return cursor + inputLabelStyle.Render(label) + input.View() + "\n"
+}
+
+// ─── Commands ─────────────────────────────────────────────────────
 
 type fetchModelsDoneMsg struct {
 	models []string
@@ -319,7 +331,7 @@ func fetchModelsCmd(baseURL, apiKey string) tea.Cmd {
 			return fetchModelsDoneMsg{err: err.Error()}
 		}
 		if apiKey != "" {
-			req.Header.Set("Authorization", "Bearer " + apiKey)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
 		resp, err := http.DefaultClient.Do(req)
@@ -330,9 +342,7 @@ func fetchModelsCmd(baseURL, apiKey string) tea.Cmd {
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			return fetchModelsDoneMsg{
-				err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body))),
-			}
+			return fetchModelsDoneMsg{err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
 		}
 
 		var listing struct {
@@ -354,8 +364,6 @@ func fetchModelsCmd(baseURL, apiKey string) tea.Cmd {
 	}
 }
 
-// ─── Test provider command ────────────────────────────────────────
-
 type testProviderDoneMsg struct {
 	status string
 	err    string
@@ -372,7 +380,7 @@ func testProviderCmd(baseURL, apiKey string) tea.Cmd {
 			return testProviderDoneMsg{err: err.Error()}
 		}
 		if apiKey != "" {
-			req.Header.Set("Authorization", "Bearer " + apiKey)
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 
 		resp, err := http.DefaultClient.Do(req)

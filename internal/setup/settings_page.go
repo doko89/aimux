@@ -8,23 +8,30 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 )
 
+func mkInput(val, placeholder string) textinput.Model {
+	t := textinput.New()
+	t.SetValue(val)
+	t.Placeholder = placeholder
+	return t
+}
+
 type settingsPageModel struct {
-	cfg       *SetupConfig
-	page      int // 0=gateway, 1=circuit, 2=ratelimit, 3=auth
-	focus     int
-	host      textinput.Model
-	port      textinput.Model
-	strategy  textinput.Model
-	maxRetry  textinput.Model
-	cbThresh  textinput.Model
+	cfg        *SetupConfig
+	page       int // 0=gateway, 1=circuit, 2=ratelimit, 3=auth
+	focus      int
+	host       textinput.Model
+	port       textinput.Model
+	strategy   textinput.Model
+	maxRetry   textinput.Model
+	cbThresh   textinput.Model
 	cbCooldown textinput.Model
-	cbHealth  textinput.Model
-	rlEnabled bool
-	rlRPM     textinput.Model
-	rlBurst   textinput.Model
-	authKeys  []string
-	authNew   textinput.Model
-	authEdit  bool
+	cbHealth   textinput.Model
+	rlEnabled  bool
+	rlRPM      textinput.Model
+	rlBurst    textinput.Model
+	authKeys   []string
+	authNew    textinput.Model
+	authEdit   bool
 }
 
 func newSettingsPage(cfg *SetupConfig) settingsPageModel {
@@ -41,50 +48,43 @@ func newSettingsPage(cfg *SetupConfig) settingsPageModel {
 	m.cbHealth = mkInput(fmt.Sprintf("%.0f", cfg.CircuitBreaker.HealthCheckInterval), "30")
 	m.rlRPM = mkInput(strconv.Itoa(cfg.RateLimit.RPM), "100")
 	m.rlBurst = mkInput(strconv.Itoa(cfg.RateLimit.Burst), "20")
-	m.authNew = textinput.New()
-	m.authNew.Placeholder = "client-key-xxx"
+	m.authNew = mkInput("", "client-key-xxx")
 	m.authKeys = make([]string, len(cfg.Auth.ValidAPIKeys))
 	copy(m.authKeys, cfg.Auth.ValidAPIKeys)
 	m.host.Focus()
 	return m
 }
 
-func mkInput(val, placeholder string) textinput.Model {
-	t := textinput.New()
-	t.SetValue(val)
-	t.Placeholder = placeholder
-	return t
-}
-
 func (m settingsPageModel) Init() tea.Cmd { return textinput.Blink }
 
 func (m settingsPageModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		return m.handleKeyMsg(msg)
-	}
-	return m, nil
+	new, cmd := m.update(msg, m.cfg)
+	return new, cmd
 }
 
-func (m settingsPageModel) handleKeyMsg(msg tea.KeyMsg) (settingsPageModel, tea.Cmd) {
-	key := msg.String()
-	navKeys := map[string]bool{
-		"tab": true, "enter": true, "escape": true, "esc": true,
-		"up": true, "k": true, "down": true, "j": true,
-		"left": true, "right": true, " ": true,
-		"a": true, "A": true, "d": true, "x": true, "delete": true,
+func (m settingsPageModel) update(msg tea.Msg, cfg *SetupConfig) (settingsPageModel, tea.Cmd) {
+	m.cfg = cfg
+
+	keyMsg, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
 	}
-	m = m.routeToInput(msg, navKeys[key])
+	key := keyMsg.String()
+
+	// Route typing to active input first (for nav keys, this is harmless)
+	m.routeInput(keyMsg, key)
 
 	switch key {
 	case "tab":
 		n := m.fieldCount()
 		if m.focus < n-1 {
 			m.focus++
+			m.focusCurrent()
 		} else if m.page < 3 {
 			m.savePage()
 			m.page++
 			m.focus = 0
+			m.focusCurrent()
 		}
 	case "enter":
 		if m.page == 3 && m.authEdit {
@@ -98,32 +98,38 @@ func (m settingsPageModel) handleKeyMsg(msg tea.KeyMsg) (settingsPageModel, tea.
 			if m.page < 3 {
 				m.page++
 				m.focus = 0
+				m.focusCurrent()
 			}
 		}
-	case "escape", "esc":
-		m.savePage()
-		m.focus = 0
 	case " ":
 		if m.page == 2 && m.focus == 0 {
 			m.rlEnabled = !m.rlEnabled
 		}
-	case "a", "A":
+	case "a":
 		if m.page == 3 && !m.authEdit {
 			m.authEdit = true
 			m.authNew.SetValue("")
 			m.focus = 1
+			m.focusCurrent()
 		}
 	case "d", "x", "delete":
 		if m.page == 3 && !m.authEdit && len(m.authKeys) > 0 && m.focus < len(m.authKeys) {
 			m.authKeys = append(m.authKeys[:m.focus], m.authKeys[m.focus+1:]...)
 		}
 	}
+
 	return m, nil
 }
 
-func (m settingsPageModel) routeToInput(msg tea.KeyMsg, isNav bool) settingsPageModel {
-	if isNav {
-		return m
+func (m *settingsPageModel) routeInput(msg tea.KeyMsg, key string) {
+	// navKeys — don't route these to inputs
+	navKeys := map[string]bool{
+		"tab": true, "enter": true, "esc": true, "escape": true,
+		"up": true, "k": true, "down": true, "j": true,
+		" ": true, "a": true, "d": true, "x": true, "delete": true,
+	}
+	if navKeys[key] {
+		return
 	}
 	switch m.page {
 	case 0:
@@ -149,7 +155,51 @@ func (m settingsPageModel) routeToInput(msg tea.KeyMsg, isNav bool) settingsPage
 			m.authNew, _ = m.authNew.Update(msg)
 		}
 	}
-	return m
+}
+
+func (m *settingsPageModel) focusCurrent() {
+	m.blurAll()
+	switch m.page {
+	case 0:
+		switch m.focus {
+		case 0: m.host.Focus()
+		case 1: m.port.Focus()
+		case 2: m.strategy.Focus()
+		case 3: m.maxRetry.Focus()
+		}
+	case 1:
+		switch m.focus {
+		case 0: m.cbThresh.Focus()
+		case 1: m.cbCooldown.Focus()
+		case 2: m.cbHealth.Focus()
+		}
+	case 2:
+		switch m.focus {
+		case 1: m.rlRPM.Focus()
+		case 2: m.rlBurst.Focus()
+		}
+	case 3:
+		if m.authEdit && m.focus == 1 {
+			m.authNew.Focus()
+		}
+	}
+}
+
+func (m *settingsPageModel) blurAll() {
+	m.host.Blur()
+	m.port.Blur()
+	m.strategy.Blur()
+	m.maxRetry.Blur()
+	m.cbThresh.Blur()
+	m.cbCooldown.Blur()
+	m.cbHealth.Blur()
+	m.rlRPM.Blur()
+	m.rlBurst.Blur()
+	m.authNew.Blur()
+}
+
+func (m settingsPageModel) isEditing() bool {
+	return true // always accept input
 }
 
 func (m settingsPageModel) fieldCount() int {
@@ -209,36 +259,30 @@ func (m settingsPageModel) View() string {
 		s += fmt.Sprintf("  %s %s  ", mark, style.Render(t))
 	}
 	s += "\n\n"
+
 	switch m.page {
 	case 0:
 		s += helpText.Render("── Gateway & Routing ──") + "\n\n"
-		s += renderFields(m.focus, []struct{ l, v string }{
-			{"Host", m.host.View()},
-			{"Port", m.port.View()},
-			{"Strategy", m.strategy.View()},
-			{"Max Retry", m.maxRetry.View()},
-		})
+		s += m.fieldRow("Host", m.host.View(), 0)
+		s += m.fieldRow("Port", m.port.View(), 1)
+		s += m.fieldRow("Strategy", m.strategy.View(), 2)
+		s += m.fieldRow("Max Retry", m.maxRetry.View(), 3)
 	case 1:
 		s += helpText.Render("── Circuit Breaker ──") + "\n\n"
-		s += renderFields(m.focus, []struct{ l, v string }{
-			{"Threshold", m.cbThresh.View()},
-			{"Cooldown(s)", m.cbCooldown.View()},
-			{"Health(s)", m.cbHealth.View()},
-		})
+		s += m.fieldRow("Threshold", m.cbThresh.View(), 0)
+		s += m.fieldRow("Cooldown(s)", m.cbCooldown.View(), 1)
+		s += m.fieldRow("Health(s)", m.cbHealth.View(), 2)
 	case 2:
 		s += helpText.Render("── Rate Limiting ──") + "\n\n"
 		enStr := "off"
 		if m.rlEnabled { enStr = "on" }
-		fields := []struct{ l, v string }{
-			{"Enabled", enStr + " (space)"},
-			{"RPM", m.rlRPM.View()},
-			{"Burst", m.rlBurst.View()},
-		}
-		s += renderFields(m.focus, fields)
+		s += m.fieldRow("Enabled", enStr+" (space)", 0)
+		s += m.fieldRow("RPM", m.rlRPM.View(), 1)
+		s += m.fieldRow("Burst", m.rlBurst.View(), 2)
 	case 3:
-		s += helpText.Render("── Auth (API Keys) ──") + "\n\n"
+		s += helpText.Render("── Auth Keys ──") + "\n\n"
 		if len(m.authKeys) == 0 {
-			s += "  (no keys — all clients allowed)\n"
+			s += "  (none — all clients allowed)\n"
 		} else {
 			for i, k := range m.authKeys {
 				cursor := "  "
@@ -253,23 +297,19 @@ func (m settingsPageModel) View() string {
 			}
 		}
 		if m.authEdit && m.focus == 1 {
-			s += "\n" + inputLabelStyle.Render("New key") + m.authNew.View() + "\n"
+			s += "\n" + m.fieldRow("New key", m.authNew.View(), 1)
 		}
 		s += "\n" + helpText.Render("a: add | d/x: remove")
 	}
 
-	s += "\n" + helpText.Render("tab: next | enter: save page | s: save all")
+	s += "\n" + helpText.Render("tab: next | enter: save page")
 	return s
 }
 
-func renderFields(focus int, fields []struct{ l, v string }) string {
-	s := ""
-	for i, f := range fields {
-		cursor := "  "
-		if focus == i {
-			cursor = "▸ "
-		}
-		s += cursor + inputLabelStyle.Render(f.l) + f.v + "\n"
+func (m settingsPageModel) fieldRow(label, val string, focusIdx int) string {
+	cursor := "  "
+	if m.focus == focusIdx {
+		cursor = "▸ "
 	}
-	return s
+	return cursor + inputLabelStyle.Render(label) + val + "\n"
 }

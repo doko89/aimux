@@ -61,25 +61,23 @@ func Run() {
 	}
 }
 
-// ─── App Model (sidebar + content) ────────────────────────────────
+// ─── App Model ────────────────────────────────────────────────────
 
 type appModel struct {
 	cfg         *SetupConfig
-	activeTab   int // 0=auth, 1=aggregator, 2=settings
-	authPage    authPageModel
-	aggPage     aggregatorPageModel
-	settingsPage settingsPageModel
-	width       int
-	height      int
+	activeTab   int
+	auth        authPageModel
+	agg         aggregatorPageModel
+	settings    settingsPageModel
 }
 
 func newAppModel(cfg *SetupConfig) appModel {
 	return appModel{
-		cfg:         cfg,
-		activeTab:   0,
-		authPage:    newAuthPage(cfg),
-		aggPage:     newAggregatorPage(cfg),
-		settingsPage: newSettingsPage(cfg),
+		cfg:       cfg,
+		activeTab: 0,
+		auth:      newAuthPage(cfg),
+		agg:       newAggregatorPage(cfg),
+		settings:  newSettingsPage(cfg),
 	}
 }
 
@@ -88,79 +86,63 @@ func (m appModel) Init() tea.Cmd {
 }
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Always handle window size and quit
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
 		return m, nil
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
+		// Ctrl+C always quits
+		if msg.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+		// Tab switching
+		if msg.String() == "tab" && !m.isEditingActive() {
+			m.activeTab = (m.activeTab + 1) % 3
+			return m, nil
+		}
+		// Save & quit
+		if msg.String() == "s" && !m.isEditingActive() {
+			dir, _ := os.Getwd()
+			if err := Save(m.cfg, dir); err != nil {
+				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
+			}
+			return m, tea.Quit
+		}
+		// Quit
+		if msg.String() == "q" && !m.isEditingActive() {
 			return m, tea.Quit
 		}
 	}
 
-	// Route to active page first
+	// Route to active page
 	var cmd tea.Cmd
-	var handled bool
 	switch m.activeTab {
 	case 0:
-		newModel, c := m.authPage.Update(msg)
-		if newPage, ok := newModel.(authPageModel); ok {
-			m.authPage = newPage
-			cmd = c
-			handled = true
-		}
+		m.auth, cmd = m.auth.update(msg, m.cfg)
 	case 1:
-		newModel, c := m.aggPage.Update(msg)
-		if newPage, ok := newModel.(aggregatorPageModel); ok {
-			m.aggPage = newPage
-			cmd = c
-			handled = true
-		}
+		m.agg, cmd = m.agg.update(msg, m.cfg)
 	case 2:
-		newModel, c := m.settingsPage.Update(msg)
-		if newPage, ok := newModel.(settingsPageModel); ok {
-			m.settingsPage = newPage
-			cmd = c
-			handled = true
-		}
+		m.settings, cmd = m.settings.update(msg, m.cfg)
 	}
-
-	if !handled {
-		// Check for tab switching
-		switch msg := msg.(type) {
-		case tea.KeyMsg:
-			switch msg.String() {
-			case "tab":
-				m.activeTab = (m.activeTab + 1) % 3
-				m.authPage.focus = 0
-				m.aggPage.focus = 0
-				m.settingsPage.focus = 0
-				return m, nil
-			case "shift+tab":
-				m.activeTab = (m.activeTab + 2) % 3
-				m.authPage.focus = 0
-				m.aggPage.focus = 0
-				m.settingsPage.focus = 0
-				return m, nil
-			case "s", "S":
-				dir, _ := os.Getwd()
-				if err := Save(m.cfg, dir); err != nil {
-					fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
-				}
-				return m, tea.Quit
-			}
-		}
-	}
-
 	return m, cmd
+}
+
+func (m appModel) isEditingActive() bool {
+	switch m.activeTab {
+	case 0:
+		return m.auth.editIdx >= 0
+	case 1:
+		return m.agg.editIdx >= 0
+	case 2:
+		return m.settings.isEditing()
+	}
+	return false
 }
 
 func (m appModel) View() string {
 	tabs := []string{" Auth ", " Aggregator ", " Settings "}
 	var sidebar string
-	sidebar += "aimux setup\n\n"
+	sidebar += "\n  aimux setup\n\n"
 	for i, t := range tabs {
 		style := inactiveTabStyle
 		prefix := "  "
@@ -170,39 +152,23 @@ func (m appModel) View() string {
 		}
 		sidebar += prefix + style.Render(t) + "\n"
 	}
-	sidebar += "\n" + helpText.Render(" tab / shift+tab") + "\n"
-	sidebar += helpText.Render(" s = save & exit") + "\n"
-	sidebar += helpText.Render(" q = quit")
+	sidebar += "\n" + helpText.Render("  tab: switch page") + "\n"
+	sidebar += helpText.Render("  s:   save & exit") + "\n"
+	sidebar += helpText.Render("  q:   quit (outside edit)")
 
 	var content string
 	switch m.activeTab {
 	case 0:
-		content = m.authPage.View()
+		content = m.auth.View()
 	case 1:
-		content = m.aggPage.View()
+		content = m.agg.View()
 	case 2:
-		content = m.settingsPage.View()
+		content = m.settings.View()
 	}
 
-	// Layout
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
 		sidebarStyle.Render(sidebar),
 		contentStyle.Render(content),
 	)
 }
-
-// ─── Save helper ───────
-
-func saveAndQuit(cfg *SetupConfig) tea.Cmd {
-	return func() tea.Msg {
-		dir, _ := os.Getwd()
-		if err := Save(cfg, dir); err != nil {
-			return saveErrMsg{err.Error()}
-		}
-		return quitMsg{}
-	}
-}
-
-type quitMsg struct{}
-type saveErrMsg struct{ s string }
