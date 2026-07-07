@@ -206,9 +206,21 @@ func (m appModel) View() string {
 		content = m.settings.View()
 	}
 
+	// Dynamic border color based on focus
+	sidebarBorder := lipgloss.Color("#444444")
+	contentBorder := lipgloss.Color("#444444")
+	if m.sidebarFocus {
+		sidebarBorder = lipgloss.Color("#7D56F4")
+	} else {
+		contentBorder = lipgloss.Color("#7D56F4")
+	}
+
+	sb := sidebarStyle.BorderForeground(sidebarBorder)
+	ct := contentStyle.BorderForeground(contentBorder)
+
 	return lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		sidebarStyle.Render(sidebar),
-		contentStyle.Render(content),
+		sb.Render(sidebar),
+		ct.Render(content),
 	)
 }
