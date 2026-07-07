@@ -327,6 +327,10 @@ func loadFromYAML() (*Config, error) {
 			RPM     int  `yaml:"rpm"`
 			Burst   int  `yaml:"burst"`
 		} `yaml:"rate_limiting"`
+		ClientKeys []struct {
+			Name string `yaml:"name"`
+			Key  string `yaml:"key"`
+		} `yaml:"client_keys"`
 		Providers []struct {
 			Name            string   `yaml:"name"`
 			Enabled         bool     `yaml:"enabled"`
@@ -368,6 +372,12 @@ func loadFromYAML() (*Config, error) {
 	cfg.RateLimit.Enabled = yc.RateLimiting.Enabled
 	cfg.RateLimit.RPM = yc.RateLimiting.RPM
 	cfg.RateLimit.Burst = yc.RateLimiting.Burst
+
+	for _, ck := range yc.ClientKeys {
+		if ck.Key != "" {
+			cfg.Auth.ValidAPIKeys = append(cfg.Auth.ValidAPIKeys, ck.Key)
+		}
+	}
 
 	for _, p := range yc.Providers {
 		if p.Name == "" {
