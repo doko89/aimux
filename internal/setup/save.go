@@ -41,14 +41,7 @@ func saveEnv(sc *SetupConfig, dir string) error {
 	fmt.Fprintf(&b, "MAX_RETRIES=%d\n", sc.Routing.MaxRetries)
 	b.WriteString("\n")
 
-	// Model Mapping
-	b.WriteString("# ---- Model Mapping ----\n")
-	b.WriteString("BIG_MODEL=gpt-4o\n")
-	b.WriteString("MIDDLE_MODEL=gpt-4o\n")
-	b.WriteString("SMALL_MODEL=gpt-4o-mini\n")
-	b.WriteString("\n")
-
-	// Providers
+	// Providers (skip built-in defaults that user didn't configure)
 	for _, p := range sc.Providers {
 		prefix := ProviderPrefix(p.Name)
 		b.WriteString("# ---- Provider: " + p.Name + " ----\n")

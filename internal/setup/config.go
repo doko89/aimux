@@ -37,14 +37,18 @@ func LoadFromExisting() *SetupConfig {
 		return NewDefaults()
 	}
 
-	providers := make([]ProviderSetup, len(cfg.Providers))
-	for i, p := range cfg.Providers {
+	// Only keep providers that have a BaseURL configured (user actually set them up).
+	// config.Load() auto-adds openai/anthropic/codex even if not configured.
+	var providers []ProviderSetup
+	for _, p := range cfg.Providers {
+		if p.BaseURL == "" {
+			continue // skip auto-added defaults with no real config
+		}
 		ps := ProviderSetup{ProviderConfig: p}
-		// If AvailableModels not set from config, try reading from env var
 		if len(ps.AvailableModels) == 0 {
 			ps.AvailableModels = parseEnvModels(p.Name)
 		}
-		providers[i] = ps
+		providers = append(providers, ps)
 	}
 
 	return &SetupConfig{
