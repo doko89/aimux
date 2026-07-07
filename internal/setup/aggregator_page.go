@@ -13,15 +13,16 @@ import (
 type aggregatorPageModel struct {
 	cfg         *SetupConfig
 	editIdx     int
-	focus       int // 0=list, 1=name, 2=strategy, 3=models, 4=pickProv, 5=pickModel, 6=weight
+	focus       int // edit: 1=name, 2=strategy, 3=models, 4=addModelBtn, 5=saveBtn
 	strategy    int
 	modelList   int
 	models      []config.ModelAggEntry
 	addPhase    bool
 	pickProv    int
 	pickModel   int
-	name        textinput.Model
 	weightInput textinput.Model
+	name        textinput.Model
+	aggList     int
 }
 
 func newAggregatorPage(cfg *SetupConfig) aggregatorPageModel {
@@ -49,58 +50,41 @@ func (m aggregatorPageModel) update(msg tea.Msg, cfg *SetupConfig) (aggregatorPa
 	}
 	key := keyMsg.String()
 
-	count := len(m.cfg.Aggregations)
-
-	// ── ADD MODEL PHASE ──
 	if m.addPhase {
 		return m.updateAddPhase(key, keyMsg)
 	}
 
-	// ── EDIT MODE ──
 	if m.editIdx >= 0 {
-		// In edit mode, navigation keys handled in updateEdit.
-		// Non-nav keys routed to textinput inside updateEdit's tail.
-		updated, cmd := m.updateEdit(key, count)
-		// Route typing to name if focused on name and key wasn't a nav key
-		navKeys := map[string]bool{
-			"up": true, "k": true, "down": true, "j": true,
-			"tab": true, "shift+tab": true, "enter": true, "esc": true, "escape": true,
-			"a": true, "d": true, "x": true, "left": true, "right": true,
-		}
-		if updated.focus == 1 && !navKeys[key] {
-			updated.name, _ = updated.name.Update(keyMsg)
-		}
+		updated, cmd := m.updateEdit(keyMsg, key)
 		return updated, cmd
 	}
 
-	// ── LIST MODE ──
-	return m.updateList(key, count)
+	return m.updateList(key)
 }
 
-func (m *aggregatorPageModel) focusInput() {
-	m.name.Blur()
-	m.weightInput.Blur()
-	if m.focus == 1 {
-		m.name.Focus()
-	}
-}
+// ── LIST MODE ──
+// Aggregations + [Add] button
 
-func (m aggregatorPageModel) updateList(key string, count int) (aggregatorPageModel, tea.Cmd) {
+func (m aggregatorPageModel) updateList(key string) (aggregatorPageModel, tea.Cmd) {
+	count := len(m.cfg.Aggregations)
+	addRow := count
+	total := addRow + 1
+
 	switch key {
 	case "up", "k":
-		if m.modelList > 0 {
-			m.modelList--
+		if m.aggList > 0 {
+			m.aggList--
 		}
 	case "down", "j":
-		if m.modelList < count {
-			m.modelList++
+		if m.aggList < total-1 {
+			m.aggList++
 		}
 	case "enter":
-		if m.modelList < count {
-			m.editIdx = m.modelList
+		if m.aggList < count {
+			m.editIdx = m.aggList
 			m.loadAgg()
 			m.focus = 1
-		} else {
+		} else if m.aggList == addRow {
 			m.editIdx = count
 			m.cfg.Aggregations = append(m.cfg.Aggregations, config.ModelAggregation{})
 			m.name.SetValue("")
@@ -108,97 +92,38 @@ func (m aggregatorPageModel) updateList(key string, count int) (aggregatorPageMo
 			m.models = nil
 			m.focus = 1
 		}
-	case "a":
-		m.editIdx = count
-		m.cfg.Aggregations = append(m.cfg.Aggregations, config.ModelAggregation{})
-		m.name.SetValue("")
-		m.strategy = 0
-		m.models = nil
-		m.focus = 1
 	case "d", "delete":
-		if count > 0 && m.modelList < count {
-			m.cfg.Aggregations = append(m.cfg.Aggregations[:m.modelList], m.cfg.Aggregations[m.modelList+1:]...)
-			if m.modelList >= len(m.cfg.Aggregations) && m.modelList > 0 {
-				m.modelList--
+		if count > 0 && m.aggList < count {
+			m.cfg.Aggregations = append(m.cfg.Aggregations[:m.aggList], m.cfg.Aggregations[m.aggList+1:]...)
+			if m.aggList >= len(m.cfg.Aggregations) && m.aggList > 0 {
+				m.aggList--
 			}
 		}
 	}
 	return m, nil
 }
 
-func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageModel, tea.Cmd) {
-	// Navigation keys — handle FIRST, never to textinput
+// ── EDIT MODE ──
+// Name, Strategy, Models, [Add Model], [Save]
+
+func (m aggregatorPageModel) updateEdit(msg tea.KeyMsg, key string) (aggregatorPageModel, tea.Cmd) {
 	switch key {
 	case "up", "k":
-		switch m.focus {
-		case 1:
-			// stay on name
-		case 2:
-			m.focus = 1
-		case 3:
-			if m.modelList > 0 {
-				m.modelList--
-			} else {
-				m.focus = 2
-			}
+		if m.focus > 1 {
+			m.focus--
 		}
-		m.focusInput()
+		m.blurAll()
 		return m, nil
 	case "down", "j":
-		switch m.focus {
-		case 1:
-			m.focus = 2
-		case 2:
-			m.focus = 3
-		case 3:
-			if m.modelList < len(m.models)-1 {
-				m.modelList++
-			}
+		if m.focus < 5 {
+			m.focus++
 		}
-		m.focusInput()
+		m.blurAll()
 		return m, nil
 	case "esc":
 		m.commitAgg()
 		m.editIdx = -1
 		m.focus = 0
-		m.modelList = 0
-		return m, nil
-	case "tab":
-		switch m.focus {
-		case 1:
-			m.focus = 2
-		case 2:
-			m.focus = 3
-		case 3:
-			m.commitAgg()
-			m.editIdx = -1
-			m.focus = 0
-		}
-		m.focusInput()
-		return m, nil
-	case "shift+tab":
-		if m.focus > 1 {
-			m.focus--
-		}
-		m.focusInput()
-		return m, nil
-	case "a":
-		if m.focus == 3 {
-			m.addPhase = true
-			m.focus = 4
-			m.pickProv = 0
-			m.pickModel = 0
-			m.weightInput.SetValue("50")
-			m.focusInput()
-		}
-		return m, nil
-	case "d", "x":
-		if m.focus == 3 && m.modelList < len(m.models) {
-			m.models = append(m.models[:m.modelList], m.models[m.modelList+1:]...)
-			if m.modelList >= len(m.models) && m.modelList > 0 {
-				m.modelList--
-			}
-		}
 		return m, nil
 	case "left":
 		if m.focus == 2 && m.strategy > 0 {
@@ -211,39 +136,57 @@ func (m aggregatorPageModel) updateEdit(key string, count int) (aggregatorPageMo
 		}
 		return m, nil
 	case "enter":
-		if m.focus == 1 {
+		switch m.focus {
+		case 1:
 			m.focus = 2
-		} else if m.focus == 2 {
+		case 2:
 			m.focus = 3
-		} else if m.focus == 3 {
+		case 3:
+			// Models list selected — nothing special, move to add model btn
+			m.focus = 4
+		case 4:
+			// Add Model button
+			m.addPhase = true
+			m.pickProv = 0
+			m.pickModel = 0
+			m.weightInput.SetValue("50")
+		case 5:
+			// Save button
 			m.commitAgg()
 			m.editIdx = -1
 			m.focus = 0
 		}
-		m.focusInput()
+		m.blurAll()
 		return m, nil
 	}
 
-	// Other keys (typing) → textinput handled by caller
+	// Typing → name input
+	if m.focus == 1 {
+		m.name, _ = m.name.Update(msg)
+	}
 	return m, nil
 }
+
+func (m *aggregatorPageModel) blurAll() {
+	m.name.Blur()
+	m.weightInput.Blur()
+	if m.focus == 1 {
+		m.name.Focus()
+	}
+}
+
+// ── ADD MODEL PHASE ──
+// Provider picker, Model picker, Weight input
 
 func (m aggregatorPageModel) updateAddPhase(key string, msg tea.KeyMsg) (aggregatorPageModel, tea.Cmd) {
 	modelChoices := m.getModelChoices()
 	switch key {
-	case "esc":
-		m.addPhase = false
-		m.focus = 3
-		return m, nil
 	case "up", "k":
 		if m.focus == 4 && m.pickProv > 0 {
 			m.pickProv--
 			m.pickModel = 0
 		} else if m.focus == 5 && m.pickModel > 0 {
 			m.pickModel--
-		} else if m.focus == 6 {
-			// move up from weight to model picker
-			m.focus = 5
 		}
 		return m, nil
 	case "down", "j":
@@ -252,21 +195,11 @@ func (m aggregatorPageModel) updateAddPhase(key string, msg tea.KeyMsg) (aggrega
 			m.pickModel = 0
 		} else if m.focus == 5 && m.pickModel < len(modelChoices)-1 {
 			m.pickModel++
-		} else if m.focus == 5 {
-			m.focus = 6
 		}
 		return m, nil
-	case "tab":
-		switch m.focus {
-		case 4:
-			m.focus = 5
-		case 5:
-			m.focus = 6
-		case 6:
-			m.addModelEntry()
-			m.addPhase = false
-			m.focus = 3
-		}
+	case "esc":
+		m.addPhase = false
+		m.focus = 4
 		return m, nil
 	case "enter":
 		m.addModelEntry()
@@ -275,7 +208,7 @@ func (m aggregatorPageModel) updateAddPhase(key string, msg tea.KeyMsg) (aggrega
 		return m, nil
 	}
 
-	// Typing → weight input when focused on weight
+	// Typing → weight input
 	if m.focus == 6 {
 		m.weightInput, _ = m.weightInput.Update(msg)
 	}
@@ -350,6 +283,8 @@ func (m aggregatorPageModel) getModelChoices() []string {
 	return models
 }
 
+// ── VIEW ──
+
 func (m aggregatorPageModel) View() string {
 	s := "\n" + inputLabelStyle.Render("Aggregations") + "\n\n"
 
@@ -359,7 +294,9 @@ func (m aggregatorPageModel) View() string {
 	} else {
 		for i, a := range m.cfg.Aggregations {
 			cursor := "  "
-			if m.editIdx == i || (m.editIdx == -1 && m.modelList == i) {
+			if m.editIdx == -1 && m.aggList == i {
+				cursor = "▸ "
+			} else if m.editIdx == i {
 				cursor = "▸ "
 			}
 			line := fmt.Sprintf("%s%s [%s] (%d)", cursor, a.Name, a.Strategy, len(a.Models))
@@ -371,16 +308,19 @@ func (m aggregatorPageModel) View() string {
 		}
 	}
 
-	addCursor := "  "
-	if m.editIdx == -1 && m.modelList == count {
-		addCursor = "▸ "
+	// [Add] button in list mode
+	if m.editIdx < 0 {
+		s += "\n"
+		s += m.renderButton("Add", 0, m.aggList == count)
+		s += "\n"
 	}
-	s += addCursor + normalStyle.Render("+ Add new") + "\n\n"
+
+	s += "\n"
 
 	if m.editIdx >= 0 {
 		s += m.renderEdit()
 	} else {
-		s += helpText.Render("enter: edit | a: add | d: remove")
+		s += helpText.Render("enter: edit/add | d: remove")
 	}
 
 	return s
@@ -389,17 +329,19 @@ func (m aggregatorPageModel) View() string {
 func (m aggregatorPageModel) renderEdit() string {
 	s := helpText.Render("── Edit Aggregation ──") + "\n\n"
 
+	// Name
 	cursor := "  "
 	if m.focus == 1 {
 		cursor = "▸ "
 	}
 	s += cursor + inputLabelStyle.Render("Name") + m.name.View() + "\n\n"
 
+	// Strategy
 	cursor = "  "
 	if m.focus == 2 {
 		cursor = "▸ "
 	}
-	s += cursor + inputLabelStyle.Render("Strategy") + "\n"
+	s += cursor + inputLabelStyle.Render("Strategy") + "  (←→ to change)\n"
 	strategies := []string{"weighted", "fallback", "round_robin"}
 	for i, st := range strategies {
 		mark := "○"
@@ -409,9 +351,10 @@ func (m aggregatorPageModel) renderEdit() string {
 		s += fmt.Sprintf("      %s %s\n", mark, st)
 	}
 
+	// Models
 	s += "\n" + inputLabelStyle.Render("Models") + "\n"
 	if len(m.models) == 0 {
-		s += "  (empty — press a)\n"
+		s += "  (empty)\n"
 	} else {
 		for i, me := range m.models {
 			cursor := "  "
@@ -422,6 +365,13 @@ func (m aggregatorPageModel) renderEdit() string {
 		}
 	}
 
+	// Buttons
+	s += "\n"
+	s += m.renderButton("Add Model", 4, false) + "  "
+	s += m.renderButton("Save", 5, false)
+	s += "\n"
+
+	// Add model picker
 	if m.addPhase {
 		s += "\n" + helpText.Render("── Pick Model ──") + "\n"
 		s += inputLabelStyle.Render("Provider") + "\n"
@@ -450,10 +400,15 @@ func (m aggregatorPageModel) renderEdit() string {
 			cursor = "▸ "
 		}
 		s += "\n" + cursor + inputLabelStyle.Render("Weight") + m.weightInput.View() + "\n"
-		s += helpText.Render("enter/tab: add | esc: cancel")
-	} else {
-		s += "\n" + helpText.Render("a: add model | d: remove | tab/done: save | esc: back")
+		s += helpText.Render("enter: add | esc: cancel")
 	}
 
 	return s
+}
+
+func (m aggregatorPageModel) renderButton(label string, focus int, highlight bool) string {
+	if m.focus == focus || highlight {
+		return activeTabStyle.Render("▸ [" + label + "]")
+	}
+	return normalStyle.Render("  [" + label + "]")
 }

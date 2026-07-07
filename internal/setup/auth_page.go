@@ -17,7 +17,7 @@ import (
 type authPageModel struct {
 	cfg          *SetupConfig
 	editIdx      int // -1 = list mode
-	focus        int // 0=list, 1=name, 2=baseurl, 3=apikey, 4=fetchBtn, 5=testBtn
+	focus        int // edit: 1=name,2=baseurl,3=apikey,4=fetchBtn,5=testBtn,6=saveBtn
 	name         textinput.Model
 	baseURL      textinput.Model
 	apiKey       textinput.Model
@@ -84,33 +84,39 @@ func (m authPageModel) handleKey(msg tea.KeyMsg) (authPageModel, tea.Cmd) {
 }
 
 // ── LIST MODE ──
+// Providers + [Add] button at the bottom
 
 func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 	count := len(m.cfg.Providers)
+	addRow := count // index for [Add] button
+	total := addRow + 1
+
 	switch key {
 	case "up", "k":
 		if m.providerList > 0 {
 			m.providerList--
 		}
 	case "down", "j":
-		if m.providerList < count-1 {
+		if m.providerList < total-1 {
 			m.providerList++
 		}
 	case "enter":
 		if m.providerList < count {
+			// Edit existing
 			m.editIdx = m.providerList
 			m.loadToFields()
 			m.focus = 1
+		} else if m.providerList == addRow {
+			// Add new
+			m.editIdx = count
+			m.cfg.Providers = append(m.cfg.Providers, ProviderSetup{
+				ProviderConfig: config.ProviderConfig{Enabled: true, Weight: 10, Priority: 6, Timeout: 120},
+			})
+			m.name.SetValue("")
+			m.baseURL.SetValue("")
+			m.apiKey.SetValue("")
+			m.focus = 1
 		}
-	case "a":
-		m.editIdx = count
-		m.cfg.Providers = append(m.cfg.Providers, ProviderSetup{
-			ProviderConfig: config.ProviderConfig{Enabled: true, Weight: 10, Priority: 6, Timeout: 120},
-		})
-		m.name.SetValue("")
-		m.baseURL.SetValue("")
-		m.apiKey.SetValue("")
-		m.focus = 1
 	case "d", "delete":
 		if count > 0 && m.providerList < count {
 			m.cfg.Providers = append(m.cfg.Providers[:m.providerList], m.cfg.Providers[m.providerList+1:]...)
@@ -123,9 +129,9 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 }
 
 // ── EDIT MODE ──
+// Name, Base URL, API Key, [Fetch Model], [Test], Models, [Save]
 
 func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, tea.Cmd) {
-	// Nav keys — handle first, return immediately
 	switch key {
 	case "up", "k":
 		if m.focus > 1 {
@@ -134,7 +140,7 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 		}
 		return m, nil
 	case "down", "j":
-		if m.focus < 5 {
+		if m.focus < 6 {
 			m.focus++
 			m.blurAll()
 		}
@@ -144,25 +150,18 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 		m.editIdx = -1
 		m.focus = 0
 		return m, nil
-	case "tab":
-		if m.focus < 5 {
-			m.focus++
-		} else {
-			m.commitEdit()
-			m.editIdx = -1
-			m.focus = 0
-		}
-		m.blurAll()
-		return m, nil
-	case "shift+tab":
-		if m.focus > 1 {
-			m.focus--
-		}
-		m.blurAll()
-		return m, nil
 	case "enter":
-		if m.focus == 4 {
-			// Fetch Model button — sync inputs first, then fetch
+		switch m.focus {
+		case 1, 2, 3:
+			// Move to next field
+			if m.focus < 3 {
+				m.focus++
+				m.blurAll()
+			} else {
+				m.focus = 4
+			}
+		case 4:
+			// Fetch Model
 			m.syncInputsToProvider()
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 				p := m.cfg.Providers[m.editIdx]
@@ -174,8 +173,8 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 				m.statusMsg = "Fetching..."
 				return m, fetchModelsCmd(p.BaseURL, p.APIKey)
 			}
-		} else if m.focus == 5 {
-			// Test button — sync inputs first, then test
+		case 5:
+			// Test
 			m.syncInputsToProvider()
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 				p := m.cfg.Providers[m.editIdx]
@@ -187,14 +186,13 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 				m.statusMsg = "Testing..."
 				return m, testProviderCmd(p.BaseURL, p.APIKey)
 			}
-		} else if m.focus < 4 {
-			// Move to next field
-			if m.focus < 3 {
-				m.focus++
-				m.blurAll()
-			} else {
-				m.focus = 4
-			}
+		case 6:
+			// Save — commit and return to list
+			m.commitEdit()
+			m.editIdx = -1
+			m.focus = 0
+			m.statusMsg = ""
+			return m, nil
 		}
 		return m, nil
 	}
@@ -277,7 +275,10 @@ func (m *authPageModel) commitEdit() {
 func (m authPageModel) View() string {
 	s := "\n" + inputLabelStyle.Render("Providers") + "\n\n"
 
-	if len(m.cfg.Providers) == 0 {
+	count := len(m.cfg.Providers)
+
+	// Provider list
+	if count == 0 {
 		s += "  (no providers configured)\n"
 	} else {
 		for i, p := range m.cfg.Providers {
@@ -304,21 +305,24 @@ func (m authPageModel) View() string {
 		}
 	}
 
+	// [Add] button in list mode
+	if m.editIdx < 0 {
+		s += "\n"
+		s += m.renderButton("Add", 0, m.editIdx == -1 && m.providerList == count)
+		s += "\n"
+	}
+
 	s += "\n"
 
+	// Edit form
 	if m.editIdx >= 0 {
 		s += helpText.Render("── Edit Provider ──") + "\n\n"
-
-		// Text fields
 		s += m.renderField("Name", m.name, 1)
 		s += m.renderField("Base URL", m.baseURL, 2)
 		s += m.renderField("API Key", m.apiKey, 3)
 		s += "\n"
-
-		// Buttons
-		s += m.renderButton("Fetch Model", 4)
-		s += "   "
-		s += m.renderButton("Test", 5)
+		s += m.renderButton("Fetch Model", 4, false) + "  "
+		s += m.renderButton("Test", 5, false)
 		s += "\n"
 
 		// Models view only
@@ -328,16 +332,21 @@ func (m authPageModel) View() string {
 			s += " (none)\n"
 		} else {
 			s += fmt.Sprintf(" (%d)\n", len(p.AvailableModels))
-			for _, m := range p.AvailableModels {
-				s += "    " + normalStyle.Render(m) + "\n"
+			for _, mdl := range p.AvailableModels {
+				s += "    " + normalStyle.Render(mdl) + "\n"
 			}
 		}
+
+		// [Save] button
+		s += "\n"
+		s += m.renderButton("Save", 6, false)
+		s += "\n"
 
 		if m.statusMsg != "" {
 			s += "\n" + m.statusMsg + "\n"
 		}
 	} else {
-		s += helpText.Render("enter: edit | a: add | d: remove")
+		s += helpText.Render("enter: edit/add | d: remove")
 	}
 
 	return s
@@ -351,8 +360,8 @@ func (m authPageModel) renderField(label string, input textinput.Model, focus in
 	return cursor + inputLabelStyle.Render(label) + input.View() + "\n"
 }
 
-func (m authPageModel) renderButton(label string, focus int) string {
-	if m.focus == focus {
+func (m authPageModel) renderButton(label string, focus int, highlight bool) string {
+	if m.focus == focus || highlight {
 		return activeTabStyle.Render("▸ [" + label + "]")
 	}
 	return normalStyle.Render("  [" + label + "]")
