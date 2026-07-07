@@ -42,11 +42,6 @@ type ProviderModelFlat struct {
 
 // LoadFromExisting reads current .env and aggregation.yaml to populate SetupConfig.
 func LoadFromExisting() *SetupConfig {
-	// If no .env exists, return empty defaults (no providers)
-	if _, err := os.Stat(".env"); os.IsNotExist(err) {
-		return NewDefaults()
-	}
-
 	cfg, err := config.Load()
 	if err != nil {
 		return NewDefaults()
@@ -54,11 +49,7 @@ func LoadFromExisting() *SetupConfig {
 
 	var providers []ProviderSetup
 	for _, p := range cfg.Providers {
-		if p.Name == "" || p.BaseURL == "" {
-			continue
-		}
-		// Skip auto-added built-in providers with no API key
-		if p.APIKey == "" && isDefaultBuiltIn(p.Name) {
+		if p.Name == "" || (p.APIKey == "" && isDefaultBuiltIn(p.Name)) {
 			continue
 		}
 		ps := ProviderSetup{ProviderConfig: p}
@@ -68,7 +59,6 @@ func LoadFromExisting() *SetupConfig {
 		providers = append(providers, ps)
 	}
 
-	// Read aggregations directly from aggregation.yaml if not loaded via config
 	aggs := cfg.ModelAggregations
 	if len(aggs) == 0 {
 		aggs = loadAggregationYAML()
