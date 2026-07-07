@@ -1,0 +1,24 @@
+# aggregation.example.yaml
+# Copy this file to aggregation.yaml and adjust for your providers.
+#
+# Model aggregations create virtual models that route across providers
+# using different strategies (weighted, fallback, round_robin).
+
+model_aggregations:
+  - name: flash
+    strategy: weighted
+    models:
+      - provider: provider-a
+        model: fast-model
+        weight: 50
+      - provider: provider-b
+        model: cheap-model
+        weight: 50
+
+  - name: pro
+    strategy: fallback
+    models:
+      - provider: provider-a
+        model: premium-model
+      - provider: provider-c
+        model: backup-model
