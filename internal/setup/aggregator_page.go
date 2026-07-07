@@ -407,7 +407,11 @@ func (m aggregatorPageModel) renderEdit() string {
 }
 
 func (m aggregatorPageModel) renderButton(label string, focus int, highlight bool) string {
-	if m.focus == focus || highlight {
+	if highlight {
+		return activeTabStyle.Render("▸ [" + label + "]")
+	}
+	// In edit mode, check focus field
+	if m.editIdx >= 0 && m.focus == focus {
 		return activeTabStyle.Render("▸ [" + label + "]")
 	}
 	return normalStyle.Render("  [" + label + "]")

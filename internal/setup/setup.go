@@ -104,14 +104,20 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.sidebarFocus = !m.sidebarFocus
 		return m, nil
-	case "s":
-		dir, _ := os.Getwd()
-		if err := Save(m.cfg, dir); err != nil {
-			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
+	}
+
+	// 's' (save) and 'q' (quit) only when sidebar focused OR not in edit mode
+	if !m.isEditing() {
+		switch key {
+		case "s":
+			dir, _ := os.Getwd()
+			if err := Save(m.cfg, dir); err != nil {
+				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
+			}
+			return m, tea.Quit
+		case "q":
+			return m, tea.Quit
 		}
-		return m, tea.Quit
-	case "q":
-		return m, tea.Quit
 	}
 
 	// Route by focus
@@ -119,6 +125,19 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateSidebar(key)
 	}
 	return m.routeToPage(keyMsg)
+}
+
+// isEditing returns true when any page is in an edit mode with text inputs.
+func (m appModel) isEditing() bool {
+	switch m.activeTab {
+	case 0:
+		return m.auth.editIdx >= 0
+	case 1:
+		return m.agg.editIdx >= 0
+	case 2:
+		return false
+	}
+	return false
 }
 
 func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
