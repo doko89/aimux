@@ -49,14 +49,14 @@ func (m credentialPageModel) update(msg tea.Msg, cfg *SetupConfig) (credentialPa
 }
 
 func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cmd) {
-	total := len(m.cfg.ClientKeys) + 1
+	total := len(m.cfg.ClientKeys) + 1 // keys + [Add] button
 	switch key {
 	case "up", "k":
 		if m.cursor > -1 {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < total-2 {
+		if m.cursor < total-1 {
 			m.cursor++
 		}
 	case "enter":
@@ -64,14 +64,15 @@ func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cm
 			m.editFocus = 0
 			m.nameInput.SetValue(m.cfg.ClientKeys[m.cursor].Name)
 			m.keyInput.SetValue(m.cfg.ClientKeys[m.cursor].Key)
-			m.nameInput.Focus()
+			m.blurAll()
 		} else {
+			// Add new key (cursor is at [Add] or empty list)
 			m.cfg.ClientKeys = append(m.cfg.ClientKeys, ClientKey{})
 			m.cursor = len(m.cfg.ClientKeys) - 1
 			m.editFocus = 0
 			m.nameInput.SetValue("")
 			m.keyInput.SetValue("")
-			m.nameInput.Focus()
+			m.blurAll()
 		}
 	case "d", "delete":
 		if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
@@ -185,9 +186,12 @@ func (m credentialPageModel) View() string {
 		}
 	}
 
+	// List mode: show keys + [Add] button
 	if m.cursor == -1 {
 		s += "\n"
-		s += renderButtonStatic("Add", true)
+		// Highlight [Add] if no keys exist, or cursor points to it
+		highlight := len(m.cfg.ClientKeys) == 0 || m.cursor == len(m.cfg.ClientKeys)
+		s += renderButtonStatic("Add", highlight)
 		s += "\n"
 	}
 
