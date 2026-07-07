@@ -93,31 +93,34 @@ func (m appModel) Init() tea.Cmd {
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
-		// Non-key messages (async results) → route to active page
 		return m.routeToPage(msg)
 	}
 
 	key := keyMsg.String()
 
-	// Global keys — always handled
+	// Global keys
 	switch key {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "tab":
+		// Save settings when leaving content
+		if !m.sidebarFocus && m.activeTab == 3 {
+			m.settings.savePage()
+		}
 		m.sidebarFocus = !m.sidebarFocus
 		return m, nil
-	}
-
-	// 's' (save) and 'q' (quit) only when sidebar focused OR not in edit mode
-	if !m.isEditing() {
-		switch key {
-		case "s":
+	case "s":
+		if m.sidebarFocus {
+			// Sync settings before saving config
+			m.settings.savePage()
 			dir, _ := os.Getwd()
 			if err := Save(m.cfg, dir); err != nil {
 				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
 			}
 			return m, tea.Quit
-		case "q":
+		}
+	case "q":
+		if m.sidebarFocus {
 			return m, tea.Quit
 		}
 	}
@@ -135,7 +138,7 @@ func (m appModel) isEditing() bool {
 	case 0:
 		return m.auth.editIdx >= 0
 	case 1:
-		return m.agg.editIdx >= 0
+		return m.agg.editIdx >= 0 || m.agg.showStrategy || m.agg.showAddModal
 	case 2:
 		return m.credential.expanded >= 0
 	case 3:
@@ -215,7 +218,6 @@ func (m appModel) View() string {
 		content = m.settings.View()
 	}
 
-	// Border highlight
 	sb := sidebarStyle
 	ct := contentStyle
 	if m.sidebarFocus {
