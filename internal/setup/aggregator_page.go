@@ -84,6 +84,7 @@ func (m aggregatorPageModel) updateList(key string) (aggregatorPageModel, tea.Cm
 			m.editIdx = m.aggList
 			m.loadAgg()
 			m.focus = 1
+			m.blurAll()
 		} else if m.aggList == addRow {
 			m.editIdx = count
 			m.cfg.Aggregations = append(m.cfg.Aggregations, config.ModelAggregation{})
@@ -91,6 +92,7 @@ func (m aggregatorPageModel) updateList(key string) (aggregatorPageModel, tea.Cm
 			m.strategy = 0
 			m.models = nil
 			m.focus = 1
+			m.blurAll()
 		}
 	case "d", "delete":
 		if count > 0 && m.aggList < count {

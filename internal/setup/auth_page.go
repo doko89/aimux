@@ -106,6 +106,7 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 			m.editIdx = m.providerList
 			m.loadToFields()
 			m.focus = 1
+			m.blurAll()
 		} else if m.providerList == addRow {
 			// Add new
 			m.editIdx = count
@@ -116,6 +117,7 @@ func (m authPageModel) updateList(key string) (authPageModel, tea.Cmd) {
 			m.baseURL.SetValue("")
 			m.apiKey.SetValue("")
 			m.focus = 1
+			m.blurAll()
 		}
 	case "d", "delete":
 		if count > 0 && m.providerList < count {
