@@ -19,7 +19,13 @@ type SetupConfig struct {
 	Aggregations   []config.ModelAggregation
 	CircuitBreaker config.CircuitBreakerConfig
 	RateLimit      config.RateLimitConfig
-	ClientKeys     []string // client API keys
+	ClientKeys     []ClientKey
+}
+
+// ClientKey is a named client API key.
+type ClientKey struct {
+	Name string `yaml:"name"`
+	Key  string `yaml:"key"`
 }
 
 // ProviderSetup wraps ProviderConfig for setup editing.
@@ -76,7 +82,10 @@ type yamlFullConfig struct {
 		RPM     int  `yaml:"rpm"`
 		Burst   int  `yaml:"burst"`
 	} `yaml:"rate_limiting"`
-	ClientKeys    []string       `yaml:"client_keys,omitempty"`
+	ClientKeys []struct {
+		Name string `yaml:"name"`
+		Key  string `yaml:"key"`
+	} `yaml:"client_keys,omitempty"`
 	Providers    []yamlProvConfig `yaml:"providers"`
 	Aggregations []yamlAggConfig  `yaml:"model_aggregations"`
 }
@@ -179,7 +188,13 @@ func LoadFromExisting() *SetupConfig {
 			RPM:     yc.RateLimiting.RPM,
 			Burst:   yc.RateLimiting.Burst,
 		},
-		ClientKeys: yc.ClientKeys,
+		ClientKeys: func() []ClientKey {
+			var keys []ClientKey
+			for _, ck := range yc.ClientKeys {
+				keys = append(keys, ClientKey{Name: ck.Name, Key: ck.Key})
+			}
+			return keys
+		}(),
 	}
 }
 
@@ -208,7 +223,22 @@ func saveConfigYAML(sc *SetupConfig, dir string) error {
 	cfg.RateLimiting.RPM = sc.RateLimit.RPM
 	cfg.RateLimiting.Burst = sc.RateLimit.Burst
 
-	cfg.ClientKeys = sc.ClientKeys
+	cfg.ClientKeys = func() []struct {
+		Name string `yaml:"name"`
+		Key  string `yaml:"key"`
+	} {
+		var keys []struct {
+			Name string `yaml:"name"`
+			Key  string `yaml:"key"`
+		}
+		for _, ck := range sc.ClientKeys {
+			keys = append(keys, struct {
+				Name string `yaml:"name"`
+				Key  string `yaml:"key"`
+			}{Name: ck.Name, Key: ck.Key})
+		}
+		return keys
+	}()
 
 	for _, p := range sc.Providers {
 		cfg.Providers = append(cfg.Providers, yamlProvConfig{

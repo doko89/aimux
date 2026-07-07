@@ -9,14 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 )
 
-type clientKey struct {
-	Name string
-	Key  string
-}
-
 type credentialPageModel struct {
 	cfg        *SetupConfig
-	keys       []clientKey
 	cursor     int // -1 = list, 0+= editing key index
 	editFocus  int // 0=name, 1=key, 2=generateBtn
 	nameInput  textinput.Model
@@ -24,15 +18,8 @@ type credentialPageModel struct {
 }
 
 func newCredentialPage(cfg *SetupConfig) credentialPageModel {
-	// Load existing keys from config
-	var keys []clientKey
-	for _, k := range cfg.ClientKeys {
-		keys = append(keys, clientKey{Key: k})
-	}
-
 	return credentialPageModel{
 		cfg:       cfg,
-		keys:      keys,
 		cursor:    -1,
 		nameInput: mkInput("", "key name"),
 		keyInput:  mkInput("", "api-key-xxx"),
@@ -55,43 +42,42 @@ func (m credentialPageModel) update(msg tea.Msg, cfg *SetupConfig) (credentialPa
 	}
 	key := keyMsg.String()
 
-	// List mode
-	if m.cursor == -1 {
-		return m.updateList(key)
+	if m.cursor >= 0 {
+		return m.updateEdit(keyMsg, key)
 	}
-	return m.updateEdit(keyMsg, key)
+	return m.updateList(key)
 }
 
 func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cmd) {
-	total := len(m.keys) + 1 // keys + [Add] button
+	total := len(m.cfg.ClientKeys) + 1
 	switch key {
 	case "up", "k":
 		if m.cursor > -1 {
 			m.cursor--
 		}
 	case "down", "j":
-		if m.cursor < total-2 { // don't go past [Add]
+		if m.cursor < total-2 {
 			m.cursor++
 		}
 	case "enter":
-		if m.cursor >= 0 && m.cursor < len(m.keys) {
-			// Edit existing key
+		if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
 			m.editFocus = 0
-			m.nameInput.SetValue(m.keys[m.cursor].Name)
-			m.keyInput.SetValue(m.keys[m.cursor].Key)
-		} else if m.cursor == -1 || m.cursor >= len(m.keys) {
-			// Add new key (on [Add] button or empty list)
-			m.keys = append(m.keys, clientKey{})
-			m.cursor = len(m.keys) - 1
+			m.nameInput.SetValue(m.cfg.ClientKeys[m.cursor].Name)
+			m.keyInput.SetValue(m.cfg.ClientKeys[m.cursor].Key)
+			m.nameInput.Focus()
+		} else {
+			m.cfg.ClientKeys = append(m.cfg.ClientKeys, ClientKey{})
+			m.cursor = len(m.cfg.ClientKeys) - 1
 			m.editFocus = 0
 			m.nameInput.SetValue("")
 			m.keyInput.SetValue("")
+			m.nameInput.Focus()
 		}
 	case "d", "delete":
-		if m.cursor >= 0 && m.cursor < len(m.keys) {
-			m.keys = append(m.keys[:m.cursor], m.keys[m.cursor+1:]...)
-			if m.cursor >= len(m.keys) {
-				m.cursor = len(m.keys) - 1
+		if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
+			m.cfg.ClientKeys = append(m.cfg.ClientKeys[:m.cursor], m.cfg.ClientKeys[m.cursor+1:]...)
+			if m.cursor >= len(m.cfg.ClientKeys) {
+				m.cursor = len(m.cfg.ClientKeys) - 1
 			}
 			if m.cursor < -1 {
 				m.cursor = -1
@@ -104,10 +90,9 @@ func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cm
 func (m credentialPageModel) updateEdit(msg tea.KeyMsg, key string) (credentialPageModel, tea.Cmd) {
 	switch key {
 	case "esc":
-		// Save and return to list
-		if m.cursor >= 0 && m.cursor < len(m.keys) {
-			m.keys[m.cursor].Name = m.nameInput.Value()
-			m.keys[m.cursor].Key = m.keyInput.Value()
+		if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
+			m.cfg.ClientKeys[m.cursor].Name = m.nameInput.Value()
+			m.cfg.ClientKeys[m.cursor].Key = m.keyInput.Value()
 		}
 		m.cursor = -1
 		return m, nil
@@ -132,10 +117,9 @@ func (m credentialPageModel) updateEdit(msg tea.KeyMsg, key string) (credentialP
 			m.editFocus = 2
 			m.blurAll()
 		case 2:
-			// Generate random key
-			if m.cursor >= 0 && m.cursor < len(m.keys) {
-				m.keys[m.cursor].Key = generateAPIKey()
-				m.keyInput.SetValue(m.keys[m.cursor].Key)
+			if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
+				m.cfg.ClientKeys[m.cursor].Key = generateAPIKey()
+				m.keyInput.SetValue(m.cfg.ClientKeys[m.cursor].Key)
 			}
 			m.editFocus = 1
 			m.blurAll()
@@ -143,7 +127,6 @@ func (m credentialPageModel) updateEdit(msg tea.KeyMsg, key string) (credentialP
 		return m, nil
 	}
 
-	// Typing → route to active input
 	m.routeInput(msg)
 	return m, nil
 }
@@ -174,26 +157,13 @@ func generateAPIKey() string {
 	return "ak-" + hex.EncodeToString(b)
 }
 
-// syncKeys writes keys back to config
-func (m *credentialPageModel) syncKeys() {
-	var keys []string
-	for _, k := range m.keys {
-		if k.Key != "" {
-			keys = append(keys, k.Key)
-		}
-	}
-	m.cfg.ClientKeys = keys
-}
-
-// ── VIEW ──
-
 func (m credentialPageModel) View() string {
 	s := "\n" + inputLabelStyle.Render("Client API Keys") + "\n\n"
 
-	if len(m.keys) == 0 {
+	if len(m.cfg.ClientKeys) == 0 {
 		s += "  (no keys — all clients allowed)\n"
 	} else {
-		for i, k := range m.keys {
+		for i, k := range m.cfg.ClientKeys {
 			cursor := "  "
 			if m.cursor == i {
 				cursor = "▸ "
@@ -215,7 +185,6 @@ func (m credentialPageModel) View() string {
 		}
 	}
 
-	// [Add] button in list mode
 	if m.cursor == -1 {
 		s += "\n"
 		s += renderButtonStatic("Add", true)
@@ -224,7 +193,6 @@ func (m credentialPageModel) View() string {
 
 	s += "\n"
 
-	// Edit form
 	if m.cursor >= 0 {
 		s += helpText.Render("── Edit Key ──") + "\n\n"
 		cursor := "  "

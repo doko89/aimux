@@ -112,7 +112,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.isEditing() {
 		switch key {
 		case "s":
-			m.credential.syncKeys()
 			dir, _ := os.Getwd()
 			if err := Save(m.cfg, dir); err != nil {
 				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
