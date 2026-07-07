@@ -66,16 +66,19 @@ func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea
 			m.statusMsg = "✓ OK (" + msg.status + ")"
 		}
 		return m, nil
-	}
-
-	keyMsg, ok := msg.(tea.KeyMsg)
-	if !ok || m.fetching {
+	case tea.KeyMsg:
+		if !m.fetching {
+			return m.handleKey(msg)
+		}
 		return m, nil
 	}
-	key := keyMsg.String()
+	return m, nil
+}
 
+func (m authPageModel) handleKey(msg tea.KeyMsg) (authPageModel, tea.Cmd) {
+	key := msg.String()
 	if m.editIdx >= 0 {
-		return m.updateEdit(keyMsg, key)
+		return m.updateEdit(msg, key)
 	}
 	return m.updateList(key)
 }
