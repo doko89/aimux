@@ -13,8 +13,14 @@ var (
 	sidebarStyle = lipgloss.NewStyle().
 			Width(22).
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#7D56F4")).
+			BorderForeground(lipgloss.Color("#444444")).
 			Padding(0, 1)
+
+	contentStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#444444")).
+			Padding(0, 2).
+			Width(60)
 
 	activeTabStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFB86C")).
@@ -25,12 +31,6 @@ var (
 
 	normalStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F8F8F2"))
-
-	contentStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(lipgloss.Color("#444444")).
-			Padding(0, 2).
-			Width(60)
 
 	inputLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#F8F8F2")).
@@ -50,6 +50,8 @@ var (
 	helpText = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#6272A4")).
 			Italic(true)
+
+	focusColor = lipgloss.Color("#7D56F4")
 )
 
 func Run() {
@@ -61,27 +63,24 @@ func Run() {
 	}
 }
 
-// ─── App Model ────────────────────────────────────────────────────
-
 type appModel struct {
-	cfg            *SetupConfig
-	sidebarFocus   bool // true=sidebar focused, false=content focused
-	activeTab      int  // 0=auth, 1=agg, 2=settings
-	sidebarCursor  int  // selected item in sidebar
-	auth           authPageModel
-	agg            aggregatorPageModel
-	settings       settingsPageModel
+	cfg           *SetupConfig
+	sidebarFocus  bool
+	activeTab     int // 0=auth, 1=agg, 2=settings
+	sidebarCursor int
+	auth          authPageModel
+	agg           aggregatorPageModel
+	settings      settingsPageModel
 }
 
 func newAppModel(cfg *SetupConfig) appModel {
 	return appModel{
-		cfg:           cfg,
-		sidebarFocus:  true,
-		activeTab:     0,
-		sidebarCursor: 0,
-		auth:          newAuthPage(cfg),
-		agg:           newAggregatorPage(cfg),
-		settings:      newSettingsPage(cfg),
+		cfg:          cfg,
+		sidebarFocus: true,
+		activeTab:    0,
+		auth:         newAuthPage(cfg),
+		agg:          newAggregatorPage(cfg),
+		settings:     newSettingsPage(cfg),
 	}
 }
 
@@ -92,22 +91,34 @@ func (m appModel) Init() tea.Cmd {
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	keyMsg, ok := msg.(tea.KeyMsg)
 	if !ok {
-		return m, nil
+		// Non-key messages (async results) → route to active page
+		return m.routeToPage(msg)
 	}
+
 	key := keyMsg.String()
 
-	// Ctrl+C always quits
-	if key == "ctrl+c" {
+	// Global keys — always handled
+	switch key {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "tab":
+		m.sidebarFocus = !m.sidebarFocus
+		return m, nil
+	case "s":
+		dir, _ := os.Getwd()
+		if err := Save(m.cfg, dir); err != nil {
+			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
+		}
+		return m, tea.Quit
+	case "q":
 		return m, tea.Quit
 	}
 
-	// ── Sidebar focused ──
+	// Route by focus
 	if m.sidebarFocus {
 		return m.updateSidebar(key)
 	}
-
-	// ── Content focused ──
-	return m.updateContent(keyMsg, key)
+	return m.routeToPage(keyMsg)
 }
 
 func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
@@ -122,41 +133,13 @@ func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
 			m.sidebarCursor++
 			m.activeTab = m.sidebarCursor
 		}
-	case "tab":
-		// Switch to content area
-		m.sidebarFocus = false
 	case "enter":
-		// Also switch to content on enter
 		m.sidebarFocus = false
-	case "s":
-		dir, _ := os.Getwd()
-		if err := Save(m.cfg, dir); err != nil {
-			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
-		}
-		return m, tea.Quit
-	case "q":
-		return m, tea.Quit
 	}
 	return m, nil
 }
 
-func (m appModel) updateContent(msg tea.KeyMsg, key string) (tea.Model, tea.Cmd) {
-	switch key {
-	case "tab":
-		// Switch back to sidebar
-		m.sidebarFocus = true
-		return m, nil
-	case "s":
-		dir, _ := os.Getwd()
-		if err := Save(m.cfg, dir); err != nil {
-			fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
-		}
-		return m, tea.Quit
-	case "q":
-		return m, tea.Quit
-	}
-
-	// Route to active page
+func (m appModel) routeToPage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.activeTab {
 	case 0:
@@ -183,17 +166,16 @@ func (m appModel) View() string {
 		sidebar += prefix + style.Render(t) + "\n"
 	}
 
-	// Help text changes based on focus
 	if m.sidebarFocus {
 		sidebar += "\n" + helpText.Render("  ↑↓: navigate") + "\n"
+		sidebar += helpText.Render("  enter: select") + "\n"
 		sidebar += helpText.Render("  tab: content") + "\n"
-		sidebar += helpText.Render("  s:   save") + "\n"
-		sidebar += helpText.Render("  q:   quit")
+		sidebar += helpText.Render("  s: save | q: quit")
 	} else {
 		sidebar += "\n" + helpText.Render("  tab: sidebar") + "\n"
 		sidebar += helpText.Render("  ↑↓: navigate fields") + "\n"
-		sidebar += helpText.Render("  s:   save") + "\n"
-		sidebar += helpText.Render("  q:   quit")
+		sidebar += helpText.Render("  enter: action/next") + "\n"
+		sidebar += helpText.Render("  s: save | q: quit")
 	}
 
 	var content string
@@ -206,21 +188,14 @@ func (m appModel) View() string {
 		content = m.settings.View()
 	}
 
-	// Dynamic border color based on focus
-	sidebarBorder := lipgloss.Color("#444444")
-	contentBorder := lipgloss.Color("#444444")
+	// Border highlight
+	sb := sidebarStyle
+	ct := contentStyle
 	if m.sidebarFocus {
-		sidebarBorder = lipgloss.Color("#7D56F4")
+		sb = sb.BorderForeground(focusColor)
 	} else {
-		contentBorder = lipgloss.Color("#7D56F4")
+		ct = ct.BorderForeground(focusColor)
 	}
 
-	sb := sidebarStyle.BorderForeground(sidebarBorder)
-	ct := contentStyle.BorderForeground(contentBorder)
-
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		sb.Render(sidebar),
-		ct.Render(content),
-	)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sb.Render(sidebar), ct.Render(content))
 }

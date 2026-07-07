@@ -162,19 +162,29 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 		return m, nil
 	case "enter":
 		if m.focus == 4 {
-			// Fetch Model button
+			// Fetch Model button — sync inputs first, then fetch
+			m.syncInputsToProvider()
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
+				p := m.cfg.Providers[m.editIdx]
+				if p.BaseURL == "" {
+					m.statusMsg = "✗ Base URL required"
+					return m, nil
+				}
 				m.fetching = true
 				m.statusMsg = "Fetching..."
-				p := m.cfg.Providers[m.editIdx]
 				return m, fetchModelsCmd(p.BaseURL, p.APIKey)
 			}
 		} else if m.focus == 5 {
-			// Test button
+			// Test button — sync inputs first, then test
+			m.syncInputsToProvider()
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
+				p := m.cfg.Providers[m.editIdx]
+				if p.BaseURL == "" {
+					m.statusMsg = "✗ Base URL required"
+					return m, nil
+				}
 				m.fetching = true
 				m.statusMsg = "Testing..."
-				p := m.cfg.Providers[m.editIdx]
 				return m, testProviderCmd(p.BaseURL, p.APIKey)
 			}
 		} else if m.focus < 4 {
@@ -183,7 +193,7 @@ func (m authPageModel) updateEdit(msg tea.KeyMsg, key string) (authPageModel, te
 				m.focus++
 				m.blurAll()
 			} else {
-				m.focus = 4 // jump to fetch button
+				m.focus = 4
 			}
 		}
 		return m, nil
@@ -219,6 +229,17 @@ func (m *authPageModel) blurAll() {
 	case 3:
 		m.apiKey.Focus()
 	}
+}
+
+func (m *authPageModel) syncInputsToProvider() {
+	if m.editIdx < 0 || m.editIdx >= len(m.cfg.Providers) {
+		return
+	}
+	p := &m.cfg.Providers[m.editIdx]
+	p.Name = strings.TrimSpace(m.name.Value())
+	p.BaseURL = strings.TrimSpace(m.baseURL.Value())
+	p.APIKey = strings.TrimSpace(m.apiKey.Value())
+	p.Enabled = true
 }
 
 func (m *authPageModel) loadToFields() {
