@@ -55,6 +55,10 @@ func (m authPageModel) update(msg tea.Msg, cfg *SetupConfig) (authPageModel, tea
 			m.statusMsg = fmt.Sprintf("✓ Found %d models", len(msg.models))
 			if m.editIdx >= 0 && m.editIdx < len(m.cfg.Providers) {
 				m.cfg.Providers[m.editIdx].AvailableModels = msg.models
+				// Set default model if empty
+				if m.cfg.Providers[m.editIdx].Model == "" && len(msg.models) > 0 {
+					m.cfg.Providers[m.editIdx].Model = msg.models[0]
+				}
 			}
 		}
 		return m, nil
