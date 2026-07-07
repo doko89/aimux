@@ -96,6 +96,24 @@ type yamlNode struct {
 	}
 }
 
+// MarshalYAML produces a flat sequence of {name,key} mappings (or plain strings).
+func (n yamlNode) MarshalYAML() (interface{}, error) {
+	if len(n.Objects) > 0 {
+		var items []interface{}
+		for _, o := range n.Objects {
+			items = append(items, map[string]interface{}{
+				"name": o.Name,
+				"key":  o.Key,
+			})
+		}
+		return items, nil
+	}
+	if len(n.Strings) > 0 {
+		return n.Strings, nil
+	}
+	return []interface{}{}, nil
+}
+
 func (n *yamlNode) UnmarshalYAML(value *yaml.Node) error {
 	// Try as sequence of objects first
 	if value.Kind == yaml.SequenceNode {
