@@ -1,21 +1,15 @@
 package setup
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"ai-router/internal/config"
 	"github.com/charmbracelet/bubbles/textinput"
 	"gopkg.in/yaml.v3"
 )
-
-// mkInput creates a textinput.Model with value and placeholder set.
-func mkInput(val, placeholder string) textinput.Model {
-	t := textinput.New()
-	t.SetValue(val)
-	t.Placeholder = placeholder
-	return t
-}
 
 // SetupConfig is a mutable mirror of config.Config used during TUI editing.
 type SetupConfig struct {
@@ -25,118 +19,25 @@ type SetupConfig struct {
 	Aggregations   []config.ModelAggregation
 	CircuitBreaker config.CircuitBreakerConfig
 	RateLimit      config.RateLimitConfig
-	Auth           config.AuthConfig
 }
 
 // ProviderSetup extends ProviderConfig with a list of available models.
 type ProviderSetup struct {
 	config.ProviderConfig
-	AvailableModels []string // models fetched/discovered for this provider
+	AvailableModels []string
 }
 
-// ProviderModelFlat is a flattened provider:model reference used in aggregations.
-type ProviderModelFlat struct {
-	Provider string
-	Model    string
+// mkInput creates a textinput.Model with value and placeholder set.
+func mkInput(val, placeholder string) textinput.Model {
+	t := textinput.New()
+	t.SetValue(val)
+	t.Placeholder = placeholder
+	return t
 }
 
-// LoadFromExisting reads current .env and aggregation.yaml to populate SetupConfig.
-func LoadFromExisting() *SetupConfig {
-	cfg, err := config.Load()
-	if err != nil {
-		return NewDefaults()
-	}
-
-	var providers []ProviderSetup
-	for _, p := range cfg.Providers {
-		if p.Name == "" || (p.APIKey == "" && isDefaultBuiltIn(p.Name)) {
-			continue
-		}
-		ps := ProviderSetup{ProviderConfig: p}
-		if len(ps.AvailableModels) == 0 {
-			ps.AvailableModels = parseEnvModels(p.Name)
-		}
-		providers = append(providers, ps)
-	}
-
-	aggs := cfg.ModelAggregations
-	if len(aggs) == 0 {
-		aggs = loadAggregationYAML()
-	}
-
-	return &SetupConfig{
-		Gateway:        cfg.Gateway,
-		Routing:        cfg.Routing,
-		Providers:      providers,
-		Aggregations:   aggs,
-		CircuitBreaker: cfg.CircuitBreaker,
-		RateLimit:      cfg.RateLimit,
-		Auth:           cfg.Auth,
-	}
-}
-
-// parseEnvModels reads <PREFIX>_AVAILABLE_MODELS from environment.
-func parseEnvModels(name string) []string {
-	prefix := ProviderPrefix(name)
-	val := os.Getenv(prefix + "_AVAILABLE_MODELS")
-	if val == "" {
-		return nil
-	}
-	var out []string
-	for _, s := range strings.Split(val, ",") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// isDefaultBuiltIn reports whether the provider is auto-added by config.Load()
-// and not explicitly configured by the user.
-func isDefaultBuiltIn(name string) bool {
-	switch name {
-	case "openai", "anthropic", "deepseek", "openrouter", "ollama":
-		return true
-	case "codex":
-		return false
-	}
-	return false
-}
-
-// loadAggregationYAML reads aggregation.yaml directly from the current directory.
-func loadAggregationYAML() []config.ModelAggregation {
-	data, err := os.ReadFile("aggregation.yaml")
-	if err != nil {
-		return nil
-	}
-
-	var file struct {
-		ModelAggregations []struct {
-			Name     string `yaml:"name"`
-			Strategy string `yaml:"strategy"`
-			Models   []struct {
-				Provider string `yaml:"provider"`
-				Model    string `yaml:"model"`
-				Weight   int    `yaml:"weight"`
-			} `yaml:"models"`
-		} `yaml:"model_aggregations"`
-	}
-	if err := yaml.Unmarshal(data, &file); err != nil {
-		return nil
-	}
-
-	var out []config.ModelAggregation
-	for _, a := range file.ModelAggregations {
-		agg := config.ModelAggregation{Name: a.Name, Strategy: a.Strategy}
-		for _, m := range a.Models {
-			agg.Models = append(agg.Models, config.ModelAggEntry{
-				Provider: m.Provider, Model: m.Model, Weight: m.Weight,
-			})
-		}
-		out = append(out, agg)
-	}
-	return out
+// ProviderPrefix converts a provider name to env var prefix (uppercase).
+func ProviderPrefix(name string) string {
+	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
 }
 
 // NewDefaults returns a SetupConfig with sensible defaults.
@@ -151,31 +52,210 @@ func NewDefaults() *SetupConfig {
 	}
 }
 
-// ProviderPrefix converts a provider name to env var prefix (uppercase).
-func ProviderPrefix(name string) string {
-	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+// ─── YAML structures ──────────────────────────────────────────────
+
+type yamlFullConfig struct {
+	Gateway struct {
+		Host  string `yaml:"host"`
+		Port  int    `yaml:"port"`
+		Debug bool   `yaml:"debug"`
+	} `yaml:"gateway"`
+	Routing struct {
+		Strategy        string `yaml:"strategy"`
+		FallbackOnError bool   `yaml:"fallback_on_error"`
+		MaxRetries      int    `yaml:"max_retries"`
+	} `yaml:"routing"`
+	CircuitBreaker struct {
+		FailureThreshold    int     `yaml:"failure_threshold"`
+		CooldownSeconds     float64 `yaml:"cooldown_seconds"`
+		HealthCheckInterval float64 `yaml:"health_check_interval"`
+	} `yaml:"circuit_breaker"`
+	RateLimiting struct {
+		Enabled bool `yaml:"enabled"`
+		RPM     int  `yaml:"rpm"`
+		Burst   int  `yaml:"burst"`
+	} `yaml:"rate_limiting"`
+	Providers    []yamlProvConfig `yaml:"providers"`
+	Aggregations []yamlAggConfig  `yaml:"model_aggregations"`
 }
 
-// AllProviderModelFlats returns all (provider, model) pairs across all providers.
-func (sc *SetupConfig) AllProviderModelFlats() []ProviderModelFlat {
-	var out []ProviderModelFlat
-	for _, p := range sc.Providers {
-		models := p.AvailableModels
-		if len(models) == 0 && p.Model != "" {
-			models = []string{p.Model}
-		}
-		for _, m := range models {
-			out = append(out, ProviderModelFlat{Provider: p.Name, Model: m})
-		}
-	}
-	return out
+type yamlProvConfig struct {
+	Name            string   `yaml:"name"`
+	Enabled         bool     `yaml:"enabled"`
+	BaseURL         string   `yaml:"base_url"`
+	APIKey          string   `yaml:"api_key"`
+	Model           string   `yaml:"model"`
+	AvailableModels []string `yaml:"available_models,omitempty"`
+	Weight          int      `yaml:"weight"`
+	Priority        int      `yaml:"priority"`
+	Timeout         int      `yaml:"timeout"`
+	AutoModel       bool     `yaml:"auto_model,omitempty"`
+	Passthrough     bool     `yaml:"passthrough,omitempty"`
 }
 
-// ProviderNames returns all provider names.
-func (sc *SetupConfig) ProviderNames() []string {
-	var out []string
-	for _, p := range sc.Providers {
-		out = append(out, p.Name)
+type yamlAggConfig struct {
+	Name     string         `yaml:"name"`
+	Strategy string         `yaml:"strategy"`
+	Models   []yamlAggModel `yaml:"models"`
+}
+
+type yamlAggModel struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+	Weight   int    `yaml:"weight"`
+}
+
+// ─── Load from config.yaml ────────────────────────────────────────
+
+func LoadFromExisting() *SetupConfig {
+	data, err := os.ReadFile("config.yaml")
+	if err != nil {
+		return NewDefaults()
 	}
-	return out
+
+	var yc yamlFullConfig
+	if err := yaml.Unmarshal(data, &yc); err != nil {
+		return NewDefaults()
+	}
+
+	var providers []ProviderSetup
+	for _, yp := range yc.Providers {
+		if yp.Name == "" {
+			continue
+		}
+		ps := ProviderSetup{
+			ProviderConfig: config.ProviderConfig{
+				Name:            yp.Name,
+				Enabled:         yp.Enabled,
+				BaseURL:         yp.BaseURL,
+				APIKey:          yp.APIKey,
+				Model:           yp.Model,
+				AvailableModels: yp.AvailableModels,
+				Weight:          yp.Weight,
+				Priority:        yp.Priority,
+				Timeout:         yp.Timeout,
+				AutoModel:       yp.AutoModel,
+				Passthrough:     yp.Passthrough,
+			},
+		}
+		providers = append(providers, ps)
+	}
+
+	var aggs []config.ModelAggregation
+	for _, ya := range yc.Aggregations {
+		agg := config.ModelAggregation{Name: ya.Name, Strategy: ya.Strategy}
+		for _, m := range ya.Models {
+			agg.Models = append(agg.Models, config.ModelAggEntry{
+				Provider: m.Provider,
+				Model:    m.Model,
+				Weight:   m.Weight,
+			})
+		}
+		aggs = append(aggs, agg)
+	}
+
+	return &SetupConfig{
+		Gateway: config.GatewayConfig{
+			Host:  yc.Gateway.Host,
+			Port:  yc.Gateway.Port,
+			Debug: yc.Gateway.Debug,
+		},
+		Routing: config.RoutingConfig{
+			Strategy:        yc.Routing.Strategy,
+			FallbackOnError: yc.Routing.FallbackOnError,
+			MaxRetries:      yc.Routing.MaxRetries,
+		},
+		Providers:    providers,
+		Aggregations: aggs,
+		CircuitBreaker: config.CircuitBreakerConfig{
+			FailureThreshold:    yc.CircuitBreaker.FailureThreshold,
+			CooldownSeconds:     yc.CircuitBreaker.CooldownSeconds,
+			HealthCheckInterval: yc.CircuitBreaker.HealthCheckInterval,
+		},
+		RateLimit: config.RateLimitConfig{
+			Enabled: yc.RateLimiting.Enabled,
+			RPM:     yc.RateLimiting.RPM,
+			Burst:   yc.RateLimiting.Burst,
+		},
+	}
+}
+
+// ─── Save to config.yaml ──────────────────────────────────────────
+
+func Save(sc *SetupConfig, dir string) error {
+	return saveConfigYAML(sc, dir)
+}
+
+func saveConfigYAML(sc *SetupConfig, dir string) error {
+	cfg := yamlFullConfig{}
+
+	cfg.Gateway.Host = sc.Gateway.Host
+	cfg.Gateway.Port = sc.Gateway.Port
+	cfg.Gateway.Debug = sc.Gateway.Debug
+
+	cfg.Routing.Strategy = sc.Routing.Strategy
+	cfg.Routing.FallbackOnError = sc.Routing.FallbackOnError
+	cfg.Routing.MaxRetries = sc.Routing.MaxRetries
+
+	cfg.CircuitBreaker.FailureThreshold = sc.CircuitBreaker.FailureThreshold
+	cfg.CircuitBreaker.CooldownSeconds = sc.CircuitBreaker.CooldownSeconds
+	cfg.CircuitBreaker.HealthCheckInterval = sc.CircuitBreaker.HealthCheckInterval
+
+	cfg.RateLimiting.Enabled = sc.RateLimit.Enabled
+	cfg.RateLimiting.RPM = sc.RateLimit.RPM
+	cfg.RateLimiting.Burst = sc.RateLimit.Burst
+
+	for _, p := range sc.Providers {
+		cfg.Providers = append(cfg.Providers, yamlProvConfig{
+			Name:            p.Name,
+			Enabled:         p.Enabled,
+			BaseURL:         p.BaseURL,
+			APIKey:          p.APIKey,
+			Model:           p.Model,
+			AvailableModels: p.AvailableModels,
+			Weight:          p.Weight,
+			Priority:        p.Priority,
+			Timeout:         p.Timeout,
+			AutoModel:       p.AutoModel,
+			Passthrough:     p.Passthrough,
+		})
+	}
+
+	for _, a := range sc.Aggregations {
+		ya := yamlAggConfig{Name: a.Name, Strategy: a.Strategy}
+		for _, m := range a.Models {
+			ya.Models = append(ya.Models, yamlAggModel{
+				Provider: m.Provider,
+				Model:    m.Model,
+				Weight:   m.Weight,
+			})
+		}
+		cfg.Aggregations = append(cfg.Aggregations, ya)
+	}
+
+	data, err := yaml.Marshal(&cfg)
+	if err != nil {
+		return err
+	}
+
+	header := "# aimux config — Generated by aimux setup\n\n"
+	path := filepath.Join(dir, "config.yaml")
+	return os.WriteFile(path, append([]byte(header), data...), 0644)
+}
+
+// isDefaultBuiltIn reports whether the provider is auto-added by config.Load()
+// and not explicitly configured by the user.
+func isDefaultBuiltIn(name string) bool {
+	switch name {
+	case "openai", "anthropic", "deepseek", "openrouter", "ollama":
+		return true
+	case "codex":
+		return false
+	}
+	return false
+}
+
+func init() {
+	// suppress unused import warning
+	_ = fmt.Sprintf
 }
