@@ -401,7 +401,7 @@ func (p *CodexProvider) HealthCheck(ctx context.Context) bool {
 func collectSSEStream(body io.Reader, model string) (*models.ResponsesResponse, error) {
 	reader := bufio.NewReader(body)
 	var outputText strings.Builder
-	var usage models.ResponsesUsage
+	var usage *models.ResponsesUsage
 
 	for {
 		line, err := reader.ReadString('\n')
@@ -437,7 +437,7 @@ func collectSSEStream(body io.Reader, model string) (*models.ResponsesResponse, 
 			outputText.WriteString(event.Delta)
 		case "response.completed":
 			if event.Response.Usage != nil {
-				usage = models.ResponsesUsage{
+				usage = &models.ResponsesUsage{
 					InputTokens:  event.Response.Usage.InputTokens,
 					OutputTokens: event.Response.Usage.OutputTokens,
 					TotalTokens:  event.Response.Usage.TotalTokens,
