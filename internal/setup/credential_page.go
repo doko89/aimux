@@ -59,7 +59,7 @@ func (m credentialPageModel) updateList(key string) (credentialPageModel, tea.Cm
 		if m.cursor < total-1 {
 			m.cursor++
 		}
-	case "enter":
+	case "enter", "right":
 		if m.cursor >= 0 && m.cursor < len(m.cfg.ClientKeys) {
 			m.editFocus = 0
 			m.nameInput.SetValue(m.cfg.ClientKeys[m.cursor].Name)
@@ -165,10 +165,6 @@ func (m credentialPageModel) View() string {
 		s += "  (no keys — all clients allowed)\n"
 	} else {
 		for i, k := range m.cfg.ClientKeys {
-			cursor := "  "
-			if m.cursor == i {
-				cursor = "▸ "
-			}
 			name := k.Name
 			if name == "" {
 				name = "(unnamed)"
@@ -177,44 +173,38 @@ func (m credentialPageModel) View() string {
 			if len(keyDisplay) > 20 {
 				keyDisplay = keyDisplay[:17] + "..."
 			}
-			line := fmt.Sprintf("%s%s  %s", cursor, name, keyDisplay)
-			if m.cursor == i && m.editFocus == 0 {
-				s += activeTabStyle.Render(line) + "\n"
+
+			if m.cursor == i && m.editFocus >= 0 {
+				// Expanded: show edit form inline
+				s += activeTabStyle.Render("▸ "+name) + "\n"
+				s += "    " + inputLabelStyle.Render("Name") + m.nameInput.View() + "\n"
+				s += "    " + inputLabelStyle.Render("Key") + m.keyInput.View() + "\n"
+				s += "    " + renderButtonStatic("Generate", m.editFocus == 2) + "\n"
 			} else {
+				// Collapsed: just show name + key
+				cursor := "  "
+				if m.cursor == i {
+					cursor = "▸ "
+				}
+				line := fmt.Sprintf("%s%s  %s", cursor, name, keyDisplay)
 				s += normalStyle.Render(line) + "\n"
 			}
 		}
 	}
 
-	// List mode: show keys + [Add] button
+	// [Add] button
 	if m.cursor == -1 {
 		s += "\n"
-		// Highlight [Add] if no keys exist, or cursor points to it
-		highlight := len(m.cfg.ClientKeys) == 0 || m.cursor == len(m.cfg.ClientKeys)
-		s += renderButtonStatic("Add", highlight)
+		s += renderButtonStatic("Add", true)
 		s += "\n"
 	}
 
 	s += "\n"
 
 	if m.cursor >= 0 {
-		s += helpText.Render("── Edit Key ──") + "\n\n"
-		cursor := "  "
-		if m.editFocus == 0 {
-			cursor = "▸ "
-		}
-		s += cursor + inputLabelStyle.Render("Name") + m.nameInput.View() + "\n"
-		cursor = "  "
-		if m.editFocus == 1 {
-			cursor = "▸ "
-		}
-		s += cursor + inputLabelStyle.Render("Key") + m.keyInput.View() + "\n"
-		s += "\n"
-		s += renderButtonStatic("Generate", m.editFocus == 2)
-		s += "\n"
-		s += helpText.Render("esc: save & back")
+		s += helpText.Render("↑↓: navigate fields | esc: save & back")
 	} else {
-		s += helpText.Render("enter: edit/add | d: remove")
+		s += helpText.Render("↑↓: navigate | enter/→: expand | d: remove")
 	}
 
 	return s
