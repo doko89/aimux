@@ -3,22 +3,46 @@
 #
 # Model aggregations create virtual models that route across providers
 # using different strategies (weighted, fallback, round_robin).
+#
+# Each virtual model is a named aggregation that clients can request.
+# The gateway selects a provider based on the strategy and forwards
+# the request to that provider's model.
 
 model_aggregations:
+  # ---- Weighted strategy ----
+  # Distributes traffic proportionally by weight.
+  # "flash" virtual model routes 70% to mimo, 15% each to opencode/opencode2.
   - name: flash
     strategy: weighted
     models:
-      - provider: provider-a
-        model: fast-model
-        weight: 50
-      - provider: provider-b
-        model: cheap-model
-        weight: 50
+      - provider: mimo
+        model: mimo-v2.5
+        weight: 70
+      - provider: opencode
+        model: deepseek-v4-flash-free
+        weight: 15
+      - provider: opencode2
+        model: deepseek-v4-flash-free
+        weight: 15
 
+  # ---- Fallback strategy ----
+  # Tries each provider in order; moves to next on failure.
+  # "pro" tries mimo first, falls back to zai if mimo is down.
   - name: pro
     strategy: fallback
     models:
-      - provider: provider-a
-        model: premium-model
-      - provider: provider-c
-        model: backup-model
+      - provider: mimo
+        model: mimo-v2.5-pro
+      - provider: zai
+        model: glm-5.2
+
+  # ---- Round-robin strategy ----
+  # Cycles through providers equally (weight is ignored).
+  # "balanced" alternates between opencode and opencode2.
+  - name: balanced
+    strategy: round_robin
+    models:
+      - provider: opencode
+        model: deepseek-v4-flash-free
+      - provider: opencode2
+        model: deepseek-v4-flash-free
