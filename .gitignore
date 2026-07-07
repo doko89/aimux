@@ -13,6 +13,7 @@ aggregation.yaml
 .vscode/
 .idea/
 
+!/.gitkeep
 # OS
 .DS_Store
 Thumbs.db
