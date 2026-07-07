@@ -2,7 +2,11 @@
 ai-router
 ai-router-linux-arm64
 aimux
+aimux-arm64
 aimux-linux-arm64
+aimux-darwin-amd64
+aimux-darwin-arm64
+aimux.exe
 
 # Config with secrets
 config.yaml
