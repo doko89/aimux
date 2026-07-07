@@ -82,12 +82,53 @@ type yamlFullConfig struct {
 		RPM     int  `yaml:"rpm"`
 		Burst   int  `yaml:"burst"`
 	} `yaml:"rate_limiting"`
-	ClientKeys []struct {
-		Name string `yaml:"name"`
-		Key  string `yaml:"key"`
-	} `yaml:"client_keys,omitempty"`
+	ClientKeys yamlNode `yaml:"client_keys"`
 	Providers    []yamlProvConfig `yaml:"providers"`
 	Aggregations []yamlAggConfig  `yaml:"model_aggregations"`
+}
+
+// yamlNode is a flexible type that can unmarshal from either a string or an object.
+type yamlNode struct {
+	Strings []string
+	Objects []struct {
+		Name string `yaml:"name"`
+		Key  string `yaml:"key"`
+	}
+}
+
+func (n *yamlNode) UnmarshalYAML(value *yaml.Node) error {
+	// Try as sequence of objects first
+	if value.Kind == yaml.SequenceNode {
+		for _, item := range value.Content {
+			if item.Kind == yaml.MappingNode {
+				var obj struct {
+					Name string `yaml:"name"`
+					Key  string `yaml:"key"`
+				}
+				if err := item.Decode(&obj); err == nil {
+					n.Objects = append(n.Objects, obj)
+					continue
+				}
+			}
+			// Try as string (old format)
+			var s string
+			if err := item.Decode(&s); err == nil {
+				n.Strings = append(n.Strings, s)
+			}
+		}
+	}
+	return nil
+}
+
+func (n yamlNode) ToClientKeys() []ClientKey {
+	var keys []ClientKey
+	for _, obj := range n.Objects {
+		keys = append(keys, ClientKey{Name: obj.Name, Key: obj.Key})
+	}
+	for _, s := range n.Strings {
+		keys = append(keys, ClientKey{Key: s})
+	}
+	return keys
 }
 
 type yamlProvConfig struct {
@@ -119,8 +160,21 @@ type yamlAggModel struct {
 // ─── Load from config.yaml ────────────────────────────────────────
 
 func LoadFromExisting() *SetupConfig {
-	data, err := os.ReadFile("config.yaml")
-	if err != nil {
+	// Try config.yaml in current directory first, then binary directory
+	paths := []string{"config.yaml"}
+	if exe, err := os.Executable(); err == nil {
+		paths = append(paths, filepath.Join(filepath.Dir(exe), "config.yaml"))
+	}
+
+	var data []byte
+	for _, p := range paths {
+		d, err := os.ReadFile(p)
+		if err == nil {
+			data = d
+			break
+		}
+	}
+	if data == nil {
 		return NewDefaults()
 	}
 
@@ -188,13 +242,7 @@ func LoadFromExisting() *SetupConfig {
 			RPM:     yc.RateLimiting.RPM,
 			Burst:   yc.RateLimiting.Burst,
 		},
-		ClientKeys: func() []ClientKey {
-			var keys []ClientKey
-			for _, ck := range yc.ClientKeys {
-				keys = append(keys, ClientKey{Name: ck.Name, Key: ck.Key})
-			}
-			return keys
-		}(),
+		ClientKeys: yc.ClientKeys.ToClientKeys(),
 	}
 }
 
@@ -223,22 +271,24 @@ func saveConfigYAML(sc *SetupConfig, dir string) error {
 	cfg.RateLimiting.RPM = sc.RateLimit.RPM
 	cfg.RateLimiting.Burst = sc.RateLimit.Burst
 
-	cfg.ClientKeys = func() []struct {
-		Name string `yaml:"name"`
-		Key  string `yaml:"key"`
-	} {
-		var keys []struct {
+	cfg.ClientKeys = yamlNode{
+		Objects: func() []struct {
 			Name string `yaml:"name"`
 			Key  string `yaml:"key"`
-		}
-		for _, ck := range sc.ClientKeys {
-			keys = append(keys, struct {
+		} {
+			var keys []struct {
 				Name string `yaml:"name"`
 				Key  string `yaml:"key"`
-			}{Name: ck.Name, Key: ck.Key})
-		}
-		return keys
-	}()
+			}
+			for _, ck := range sc.ClientKeys {
+				keys = append(keys, struct {
+					Name string `yaml:"name"`
+					Key  string `yaml:"key"`
+				}{Name: ck.Name, Key: ck.Key})
+			}
+			return keys
+		}(),
+	}
 
 	for _, p := range sc.Providers {
 		cfg.Providers = append(cfg.Providers, yamlProvConfig{
