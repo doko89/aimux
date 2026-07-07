@@ -66,10 +66,11 @@ func Run() {
 type appModel struct {
 	cfg           *SetupConfig
 	sidebarFocus  bool
-	activeTab     int // 0=auth, 1=agg, 2=settings
+	activeTab     int // 0=auth, 1=agg, 2=credential, 3=settings
 	sidebarCursor int
 	auth          authPageModel
 	agg           aggregatorPageModel
+	credential    credentialPageModel
 	settings      settingsPageModel
 }
 
@@ -80,6 +81,7 @@ func newAppModel(cfg *SetupConfig) appModel {
 		activeTab:    0,
 		auth:         newAuthPage(cfg),
 		agg:          newAggregatorPage(cfg),
+		credential:   newCredentialPage(cfg),
 		settings:     newSettingsPage(cfg),
 	}
 }
@@ -110,6 +112,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if !m.isEditing() {
 		switch key {
 		case "s":
+			m.credential.syncKeys()
 			dir, _ := os.Getwd()
 			if err := Save(m.cfg, dir); err != nil {
 				fmt.Fprintf(os.Stderr, "Save error: %v\n", err)
@@ -135,6 +138,8 @@ func (m appModel) isEditing() bool {
 	case 1:
 		return m.agg.editIdx >= 0
 	case 2:
+		return m.credential.cursor >= 0
+	case 3:
 		return false
 	}
 	return false
@@ -148,7 +153,7 @@ func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
 			m.activeTab = m.sidebarCursor
 		}
 	case "down", "j":
-		if m.sidebarCursor < 2 {
+		if m.sidebarCursor < 3 {
 			m.sidebarCursor++
 			m.activeTab = m.sidebarCursor
 		}
@@ -166,13 +171,15 @@ func (m appModel) routeToPage(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case 1:
 		m.agg, cmd = m.agg.update(msg, m.cfg)
 	case 2:
+		m.credential, cmd = m.credential.update(msg, m.cfg)
+	case 3:
 		m.settings, cmd = m.settings.update(msg, m.cfg)
 	}
 	return m, cmd
 }
 
 func (m appModel) View() string {
-	tabs := []string{" Auth ", " Aggregator ", " Settings "}
+	tabs := []string{" Auth ", " Aggregator ", " Credential ", " Settings "}
 	var sidebar string
 	sidebar += "\n  aimux setup\n\n"
 	for i, t := range tabs {
@@ -204,6 +211,8 @@ func (m appModel) View() string {
 	case 1:
 		content = m.agg.View()
 	case 2:
+		content = m.credential.View()
+	case 3:
 		content = m.settings.View()
 	}
 
