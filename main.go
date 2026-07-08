@@ -362,12 +362,13 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Inject MCP tools so the LLM sees them.
 		if s.mcpMgr != nil {
 			openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
-			// MCP agentic loop only runs in non-streaming handlers.
-			if req.Stream && s.mcpMgr.ToolCount() > 0 {
-				debugLog("MCP tools active: downgrading stream request to non-stream for agentic loop")
-				req.Stream = false
-				openaiReq.Stream = false
-			}
+		}
+		// When streaming is requested AND MCP tools are active, use a special
+		// streaming handler that runs the agentic tool-call loop internally and
+		// streams the final answer via SSE.
+		if req.Stream && s.mcpMgr != nil && s.mcpMgr.ToolCount() > 0 {
+			s.handleAggregatedStreamMCP(w, r, openaiReq, agg)
+			return
 		}
 		s.handleAggregated(w, r, openaiReq, agg)
 		return
@@ -707,6 +708,224 @@ func (s *server) handleAggregatedNonStream(w http.ResponseWriter, r *http.Reques
 	}
 
 	writeError(w, http.StatusInternalServerError, "api_error", "MCP tool loop exceeded maximum steps")
+}
+
+// handleAggregatedStreamMCP handles streaming requests for aggregation models
+// when MCP tools are active. It runs the agentic tool-call loop internally
+// (non-stream to the provider) and then streams the final answer back to the
+// client using the Anthropic SSE format. This gives the client a streaming
+// experience even though MCP tool calls require round-trips with the provider.
+func (s *server) handleAggregatedStreamMCP(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState) {
+	debugLog("aggregated stream with MCP loop: model=%s", openaiReq.Model)
+
+	// Set SSE headers early so the client sees a streaming response.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "api_error", "streaming unsupported")
+		return
+	}
+	fw := &flushingWriter{w: w, f: flusher}
+	sse := converters.NewSSEWriter(fw)
+
+	ctx := r.Context()
+	strat := router.Strategy(aggAS.Config.Strategy)
+	candidates := s.buildAggCandidates(aggAS.Config.Models)
+	if len(candidates) == 0 {
+		sse.Write("error", map[string]interface{}{
+			"type":  "error",
+			"error": map[string]interface{}{"type": "api_error", "message": "no valid providers for this aggregation"},
+		})
+		return
+	}
+
+	// Run MCP agentic loop internally (non-stream to provider).
+	openaiReq.Stream = false
+
+	for step := range maxMCPLoopSteps {
+		remaining := candidates
+		var resp *models.ChatCompletionResponse
+		var success bool
+
+		for attempt := 0; attempt < len(candidates); attempt++ {
+			c, err := aggAS.selectCandidateLocked(remaining, strat)
+			if err != nil {
+				break
+			}
+			openaiReq.Model = c.Model
+			debugLog("agg MCP stream step %d attempt %d: provider=%s model=%s", step+1, attempt+1, c.Provider.Name, c.Model)
+			start := time.Now()
+			rr, perr := c.Provider.Client.ChatCompletion(ctx, *openaiReq)
+			latency := float64(time.Since(start).Microseconds()) / 1000.0
+			debugLog("agg MCP stream step %d attempt %d: latency=%.1fms err=%v", step+1, attempt+1, latency, perr)
+
+			if perr == nil {
+				s.engine.RecordSuccess(c.Provider, latency)
+				resp = rr
+				success = true
+				break
+			}
+			if pe, ok := perr.(*router.ProviderError); ok {
+				s.engine.RecordFailure(c.Provider, pe.Retryable)
+			} else {
+				s.engine.RecordFailure(c.Provider, true)
+			}
+			remaining = filterCandidates(remaining, c.Provider.Name)
+		}
+
+		if !success {
+			sse.Write("error", map[string]interface{}{
+				"type":  "error",
+				"error": map[string]interface{}{"type": "api_error", "message": "all aggregation entries failed"},
+			})
+			return
+		}
+
+		// Check if there are MCP tool calls to intercept (agentic loop).
+		if s.mcpMgr != nil && len(resp.Choices) > 0 {
+			choice := resp.Choices[0]
+			mcpCalls := filterMCPCalls(choice.Message.ToolCalls, s.mcpMgr)
+			if len(mcpCalls) > 0 {
+				debugLog("agg MCP stream tool call: %d calls, looping", len(mcpCalls))
+				openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+					Role:      "assistant",
+					Content:   choice.Message.Content,
+					ToolCalls: choice.Message.ToolCalls,
+				})
+				for _, tc := range mcpCalls {
+					resultText, _, callErr := s.mcpMgr.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
+					if callErr != nil {
+						resultText = fmt.Sprintf("MCP tool error: %v", callErr)
+					}
+					openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Content:    resultText,
+					})
+				}
+				continue
+			}
+		}
+
+		// No more MCP tool calls — stream the final answer as SSE.
+		// Convert the non-stream response into a simulated stream so the client
+		// gets the full Anthropic streaming experience.
+		anthropicResp, convErr := s.respConverter.ConvertNonStream(resp, openaiReq.Model)
+		if convErr != nil {
+			sse.Write("error", map[string]interface{}{
+				"type":  "error",
+				"error": map[string]interface{}{"type": "api_error", "message": convErr.Error()},
+			})
+			return
+		}
+		s.streamFinalAsSSE(sse, fw, anthropicResp)
+		return
+	}
+
+	sse.Write("error", map[string]interface{}{
+		"type":  "error",
+		"error": map[string]interface{}{"type": "api_error", "message": "MCP tool loop exceeded maximum steps"},
+	})
+}
+
+// streamFinalAsSSE writes a single non-stream Anthropic MessageResponse as a
+// sequence of SSE events that mimics the streaming format the client expects.
+// This lets the MCP agentic loop preserve a streaming experience for the caller.
+func (s *server) streamFinalAsSSE(sse *converters.SSEWriter, fw *flushingWriter, resp *models.MessageResponse) {
+	debugLog("streamFinalAsSSE: %d content blocks", len(resp.Content))
+
+	sse.Write("message_start", map[string]interface{}{
+		"type": "message_start",
+		"message": map[string]interface{}{
+			"id":            resp.ID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []interface{}{},
+			"model":         resp.Model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         map[string]interface{}{"input_tokens": resp.Usage.InputTokens, "output_tokens": 0},
+		},
+	})
+
+	for i, block := range resp.Content {
+		cb := map[string]interface{}{
+			"type": block.Type,
+			"text": block.Text,
+			"id":   block.ID,
+			"name": block.Name,
+		}
+		if block.Input != nil {
+			var input interface{}
+			if err := json.Unmarshal(block.Input, &input); err == nil {
+				cb["input"] = input
+			}
+		}
+		if block.Thinking != "" {
+			cb["thinking"] = block.Thinking
+		}
+		sse.Write("content_block_start", map[string]interface{}{
+			"type":          "content_block_start",
+			"index":         i,
+			"content_block": cb,
+		})
+
+		if block.Type == "text" && block.Text != "" {
+			sse.Write("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": i,
+				"delta": map[string]interface{}{"type": "text_delta", "text": block.Text},
+			})
+		}
+		if block.Type == "thinking" && block.Thinking != "" {
+			sse.Write("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": i,
+				"delta": map[string]interface{}{"type": "thinking_delta", "thinking": block.Thinking},
+			})
+		}
+		if block.Type == "tool_use" {
+			sse.Write("content_block_delta", map[string]interface{}{
+				"type":  "content_block_delta",
+				"index": i,
+				"delta": map[string]interface{}{
+					"type":         "input_json_delta",
+					"partial_json": rawJSONString(block.Input),
+				},
+			})
+		}
+		sse.Write("content_block_stop", map[string]interface{}{
+			"type":  "content_block_stop",
+			"index": i,
+		})
+	}
+
+	outTokens := resp.Usage.OutputTokens
+	sse.Write("message_delta", map[string]interface{}{
+		"type": "message_delta",
+		"delta": map[string]interface{}{
+			"stop_reason":   resp.StopReason,
+			"stop_sequence": nil,
+		},
+		"usage": map[string]interface{}{"output_tokens": outTokens},
+	})
+
+	sse.Write("message_stop", map[string]interface{}{"type": "message_stop"})
+
+	debugLog("streamFinalAsSSE: done")
+}
+
+// rawJSONString converts a json.RawMessage to its string representation.
+// Returns "{}" for nil input to avoid serializing null.
+func rawJSONString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return "{}"
+	}
+	return string(raw)
 }
 
 func (s *server) handleAggregatedStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState, candidates []router.Candidate) {
