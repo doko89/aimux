@@ -22,6 +22,7 @@ import (
 	"ai-router/internal/converters"
 	"ai-router/internal/health"
 	"ai-router/internal/login"
+	"ai-router/internal/mcp"
 	"ai-router/internal/middleware"
 	"ai-router/internal/models"
 	"ai-router/internal/providers"
@@ -71,6 +72,7 @@ type server struct {
 	passthrough   *config.ProviderConfig
 	monitor       *health.Monitor
 	modelAggs     map[string]*aggregationState
+	mcpMgr        *mcp.MCPManager
 }
 
 type aggregationState struct {
@@ -102,7 +104,7 @@ func main() {
 			login.Run(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("aimux v0.1.3")
+			fmt.Println("aimux v0.1.4")
 			return
 		case "help", "--help", "-h":
 			printUsage()
@@ -223,6 +225,18 @@ func startServer() {
 	srv.monitor = monitor
 	monitor.Start()
 
+	// Initialize MCP manager if configured.
+	if len(cfg.MCP.Servers) > 0 {
+		mcpMgr := mcp.NewManager(cfg.MCP.Servers)
+		mcpCtx, mcpCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer mcpCancel()
+		if err := mcpMgr.ConnectAll(mcpCtx, cfg.MCP.Servers); err != nil {
+			log.Printf("[mcp] warning: some servers failed to connect: %v", err)
+		}
+		srv.mcpMgr = mcpMgr
+		log.Printf("[mcp] connected: %d servers, %d tools", mcpMgr.ServerCount(), mcpMgr.ToolCount())
+	}
+
 	r := chi.NewRouter()
 
 	// Public endpoints — no auth required (model discovery and health probes).
@@ -276,6 +290,10 @@ func startServer() {
 		log.Printf("graceful shutdown failed: %v", err)
 	}
 	monitor.Stop()
+	if srv.mcpMgr != nil {
+		srv.mcpMgr.Close()
+		log.Printf("[mcp] connections closed")
+	}
 	log.Printf("server stopped")
 }
 
@@ -358,6 +376,11 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inject MCP tools into the request if available.
+	if s.mcpMgr != nil {
+		openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
+	}
+
 	if req.Stream {
 		s.handleStream(w, r, openaiReq)
 		return
@@ -368,19 +391,59 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
 	debugLog("direct non-stream request: model=%s", openaiReq.Model)
-	resp, _, err := s.engine.Execute(r.Context(), *openaiReq)
-	if err != nil {
-		debugLog("direct non-stream error: %v", err)
-		writeError(w, http.StatusBadGateway, "api_error", err.Error())
+	const maxMCPSteps = 10
+	ctx := r.Context()
+
+	for step := range maxMCPSteps {
+		resp, usedProvider, err := s.engine.Execute(ctx, *openaiReq)
+		if err != nil {
+			debugLog("direct non-stream error: %v", err)
+			writeError(w, http.StatusBadGateway, "api_error", err.Error())
+			return
+		}
+		if step == 0 {
+			openaiReq.Model = usedProvider.Model
+		}
+
+		// Check if there are MCP tool calls to intercept.
+		if s.mcpMgr != nil && len(resp.Choices) > 0 {
+			choice := resp.Choices[0]
+			mcpCalls := filterMCPCalls(choice.Message.ToolCalls, s.mcpMgr)
+			if len(mcpCalls) > 0 {
+				// Append assistant message with tool calls.
+				openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+					Role:      "assistant",
+					Content:   choice.Message.Content,
+					ToolCalls: choice.Message.ToolCalls,
+				})
+				// Execute MCP tool calls and append results.
+				for _, tc := range mcpCalls {
+					resultText, _, callErr := s.mcpMgr.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
+					if callErr != nil {
+						resultText = fmt.Sprintf("MCP tool error: %v", callErr)
+					}
+					openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Content:    resultText,
+					})
+				}
+				continue
+			}
+		}
+
+		// No MCP tool calls — return the response.
+		anthropicResp, err := s.respConverter.ConvertNonStream(resp, openaiReq.Model)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(anthropicResp)
 		return
 	}
-	anthropicResp, err := s.respConverter.ConvertNonStream(resp, openaiReq.Model)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "api_error", err.Error())
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(anthropicResp)
+
+	writeError(w, http.StatusInternalServerError, "api_error", "MCP tool loop exceeded maximum steps")
 }
 
 func (s *server) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
@@ -445,6 +508,12 @@ func (s *server) passthroughAnthropic(w http.ResponseWriter, r *http.Request, bo
 	pc := s.passthrough
 	url := strings.TrimRight(pc.BaseURL, "/") + "/v1/messages"
 
+	// Check if the original request was streaming.
+	var req struct {
+		Stream bool `json:"stream"`
+	}
+	json.Unmarshal(body, &req)
+
 	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(pc.Timeout)*time.Second)
 	defer cancel()
 
@@ -464,20 +533,30 @@ func (s *server) passthroughAnthropic(w http.ResponseWriter, r *http.Request, bo
 		return
 	}
 	defer resp.Body.Close()
-	debugLog("passthrough response: status=%d", resp.StatusCode)
+	debugLog("passthrough response: status=%d stream=%v", resp.StatusCode, req.Stream)
 
 	if resp.StatusCode != http.StatusOK {
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 		return
 	}
 
-	// Stream the raw SSE (Anthropic format) back to the client.
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	io.Copy(w, resp.Body)
+	if req.Stream {
+		// Streaming: forward raw SSE back to client.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		io.Copy(w, resp.Body)
+	} else {
+		// Non-streaming: forward JSON with correct content-type.
+		w.Header().Set("Content-Type", "application/json")
+		io.Copy(w, resp.Body)
+	}
 }
 
 func (s *server) handleAggregated(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState) {
@@ -713,6 +792,11 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Inject MCP tools into the request if available.
+	if s.mcpMgr != nil {
+		openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
+	}
+
 	// Handle aggregation model.
 	if agg, ok := s.modelAggs[openaiReq.Model]; ok {
 		if openaiReq.Stream {
@@ -728,14 +812,55 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, usedProvider, err := s.engine.Execute(r.Context(), openaiReq)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", err.Error())
+	s.handleChatCompletionsNonStream(w, r, &openaiReq)
+}
+
+func (s *server) handleChatCompletionsNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
+	ctx := r.Context()
+	const maxMCPSteps = 10
+
+	for step := range maxMCPSteps {
+		resp, usedProvider, err := s.engine.Execute(ctx, *openaiReq)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "api_error", err.Error())
+			return
+		}
+		if step == 0 {
+			openaiReq.Model = usedProvider.Model
+		}
+
+		// Check if there are MCP tool calls to intercept.
+		if s.mcpMgr != nil && len(resp.Choices) > 0 {
+			choice := resp.Choices[0]
+			mcpCalls := filterMCPCalls(choice.Message.ToolCalls, s.mcpMgr)
+			if len(mcpCalls) > 0 {
+				openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+					Role:      "assistant",
+					Content:   choice.Message.Content,
+					ToolCalls: choice.Message.ToolCalls,
+				})
+				for _, tc := range mcpCalls {
+					resultText, _, callErr := s.mcpMgr.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
+					if callErr != nil {
+						resultText = fmt.Sprintf("MCP tool error: %v", callErr)
+					}
+					openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Content:    resultText,
+					})
+				}
+				continue
+			}
+		}
+
+		resp.Model = usedProvider.Model
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
-	resp.Model = usedProvider.Model
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+
+	writeError(w, http.StatusInternalServerError, "api_error", "MCP tool loop exceeded maximum steps")
 }
 
 func (s *server) handleChatStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
@@ -1040,4 +1165,23 @@ Examples:
 
 Server config:
   Set env vars or config.yaml. See README.md for details.`)
+}
+
+// maxMCPLoopSteps is the maximum number of agentic tool call iterations
+// allowed per request before the gateway returns an error.
+const maxMCPLoopSteps = 10
+
+// filterMCPCalls returns only the ToolCalls whose function name is managed
+// by the MCP manager (i.e., not client-defined tools).
+func filterMCPCalls(calls []models.ToolCall, mcpMgr *mcp.MCPManager) []models.ToolCall {
+	if mcpMgr == nil || len(calls) == 0 {
+		return nil
+	}
+	var mcpCalls []models.ToolCall
+	for _, tc := range calls {
+		if mcpMgr.HasTool(tc.Function.Name) {
+			mcpCalls = append(mcpCalls, tc)
+		}
+	}
+	return mcpCalls
 }
