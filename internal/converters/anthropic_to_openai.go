@@ -2,6 +2,7 @@ package converters
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"ai-router/internal/models"
@@ -302,11 +303,18 @@ func (c *AnthropicToOpenAIConverter) mapModel(model string) string {
 	if target, ok := c.ModelMapping[model]; ok {
 		return target
 	}
-	// Prefix match.
-	for prefix, target := range c.ModelMapping {
+	// Prefix match — deterministic: collect matching prefixes and prefer the
+	// longest (most specific) so "claude-sonnet" wins over "claude". Map
+	// iteration order is randomized, so we must not rely on it.
+	var prefixes []string
+	for prefix := range c.ModelMapping {
 		if strings.HasPrefix(model, prefix) {
-			return target
+			prefixes = append(prefixes, prefix)
 		}
+	}
+	if len(prefixes) > 0 {
+		sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+		return c.ModelMapping[prefixes[0]]
 	}
 	// Provider-prefixed models pass through unchanged.
 	if strings.Contains(model, "/") {

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -173,6 +175,27 @@ func chatToResponsesRequest(req models.ChatCompletionRequest) models.ResponsesRe
 		out.Reasoning = &models.ResponsesReasoning{Effort: &req.ReasoningEffort}
 	}
 
+	// Convert OpenAI tools → Responses API format.
+	// OpenAI: {"type":"function","function":{"name":"...","description":"...","parameters":{...}}}
+	// Responses: {"type":"function","name":"...","description":"...","parameters":{...}}
+	if len(req.Tools) > 0 {
+		for _, tool := range req.Tools {
+			if tool.Type == "" {
+				continue
+			}
+			respTool := map[string]interface{}{
+				"type":        tool.Type,
+				"name":        tool.Function.Name,
+				"description": tool.Function.Description,
+			}
+			if tool.Function.Parameters != nil {
+				respTool["parameters"] = tool.Function.Parameters
+			}
+			raw, _ := json.Marshal(respTool)
+			out.Tools = append(out.Tools, raw)
+		}
+	}
+
 	// Temperature / top_p.
 	if req.Temperature != nil {
 		out.Temperature = req.Temperature
@@ -187,13 +210,15 @@ func chatToResponsesRequest(req models.ChatCompletionRequest) models.ResponsesRe
 // responsesToChatResponse converts a Responses API response back to Chat Completions format.
 func responsesToChatResponse(resp models.ResponsesResponse, model string) models.ChatCompletionResponse {
 	out := models.ChatCompletionResponse{
-		ID:    resp.ID,
+		ID:     resp.ID,
 		Object: "chat.completion",
-		Model: model,
-		Usage: models.OAUsage{
+		Model:  model,
+	}
+	if resp.Usage != nil {
+		out.Usage = models.OAUsage{
 			PromptTokens:     resp.Usage.InputTokens,
 			CompletionTokens: resp.Usage.OutputTokens,
-		},
+		}
 	}
 
 	for _, item := range resp.Output {
@@ -281,7 +306,7 @@ func (p *CodexProvider) ChatCompletion(ctx context.Context, req models.ChatCompl
 	}
 
 	// Collect SSE stream into a ResponsesResponse.
-	responsesResp, err := collectSSEStream(resp.Body, req.Model)
+	responsesResp, err := collectSSEStream(ctx, resp.Body, req.Model)
 	if err != nil {
 		return nil, router.NewProviderError(resp.StatusCode, "server", true, err)
 	}
@@ -334,6 +359,32 @@ func (p *CodexProvider) ChatCompletionStream(ctx context.Context, req models.Cha
 		defer resp.Body.Close()
 
 		reader := bufio.NewReader(resp.Body)
+
+		// Track function calls so argument deltas map back to the right index.
+		// Keyed by Responses API item id (response.function_call_arguments.delta
+		// carries an "item_id"); values are the assigned OpenAI tool-call index.
+		var fcIdx int
+		fcOrder := make(map[string]int)
+
+		newChunk := func(delta models.Delta, finishReason *string) models.ChatCompletionChunk {
+			return models.ChatCompletionChunk{
+				ID:     fmt.Sprintf("chatcmpl-%s", randomHex(16)),
+				Object: "chat.completion.chunk",
+				Model:  req.Model,
+				Choices: []struct {
+					Index        int            `json:"index"`
+					Delta        models.Delta   `json:"delta"`
+					FinishReason *string        `json:"finish_reason"`
+				}{
+					{
+						Index:        0,
+						Delta:        delta,
+						FinishReason: finishReason,
+					},
+				},
+			}
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -353,37 +404,76 @@ func (p *CodexProvider) ChatCompletionStream(ctx context.Context, req models.Cha
 				return
 			}
 
-			// Parse Responses API SSE event.
+			// Parse the relevant Responses API SSE events.
 			var event struct {
-				Type  string `json:"type"`
-				Delta string `json:"delta"`
+				Type   string `json:"type"`
+				Delta  string `json:"delta"`
+				ItemID string `json:"item_id"`
+				Name   string `json:"name"`
+				Response struct {
+					Usage *struct {
+						InputTokens  int `json:"input_tokens"`
+						OutputTokens int `json:"output_tokens"`
+					} `json:"usage"`
+				} `json:"response"`
 			}
 			if err := json.Unmarshal([]byte(data), &event); err != nil {
 				continue
 			}
 
-			// Convert response.output_text.delta → ChatCompletionChunk.
-			if event.Type == "response.output_text.delta" {
-				chunk := models.ChatCompletionChunk{
-					ID:     fmt.Sprintf("chatcmpl-%s", randomHex(16)),
-					Object: "chat.completion.chunk",
-					Model:  req.Model,
-					Choices: []struct {
-						Index        int            `json:"index"`
-						Delta        models.Delta   `json:"delta"`
-						FinishReason *string        `json:"finish_reason"`
-					}{
-						{
-							Index: 0,
-							Delta: models.Delta{Content: event.Delta},
-						},
-					},
+			var chunk models.ChatCompletionChunk
+			switch event.Type {
+			case "response.output_text.delta":
+				chunk = newChunk(models.Delta{Content: event.Delta}, nil)
+
+			case "response.reasoning_summary_text.delta":
+				chunk = newChunk(models.Delta{ReasoningContent: event.Delta}, nil)
+
+			case "response.function_call_arguments.delta":
+				// Assign/look up the tool-call index for this item id.
+				idx, ok := fcOrder[event.ItemID]
+				if !ok {
+					idx = fcIdx
+					fcOrder[event.ItemID] = idx
+					fcIdx++
 				}
-				select {
-				case ch <- chunk:
-				case <-ctx.Done():
-					return
+				tc := models.DeltaToolCall{Index: idx, Type: "function"}
+				tc.Function.Arguments = event.Delta
+				chunk = newChunk(models.Delta{ToolCalls: []models.DeltaToolCall{tc}}, nil)
+
+			case "response.output_item.added":
+				// A function_call item carries the tool name; emit the call start.
+				if event.Name != "" && event.ItemID != "" {
+					if _, ok := fcOrder[event.ItemID]; !ok {
+						fcOrder[event.ItemID] = fcIdx
+						fcIdx++
+					}
+					idx := fcOrder[event.ItemID]
+					tc := models.DeltaToolCall{Index: idx, Type: "function"}
+					tc.Function.Name = event.Name
+					chunk = newChunk(models.Delta{ToolCalls: []models.DeltaToolCall{tc}}, nil)
+				} else {
+					continue
 				}
+
+			case "response.completed":
+				reason := "stop"
+				chunk = newChunk(models.Delta{}, &reason)
+				if event.Response.Usage != nil {
+					chunk.Usage = &models.OAUsage{
+						PromptTokens:     event.Response.Usage.InputTokens,
+						CompletionTokens: event.Response.Usage.OutputTokens,
+					}
+				}
+
+			default:
+				continue
+			}
+
+			select {
+			case ch <- chunk:
+			case <-ctx.Done():
+				return
 			}
 		}
 	}()
@@ -397,13 +487,28 @@ func (p *CodexProvider) HealthCheck(ctx context.Context) bool {
 }
 
 // collectSSEStream reads an SSE stream from the Codex backend and collects
-// it into a ResponsesResponse.
-func collectSSEStream(body io.Reader, model string) (*models.ResponsesResponse, error) {
+// it into a ResponsesResponse. The caller may close the body (or cancel the
+// http.Request context) to abort the read.
+func collectSSEStream(ctx context.Context, body io.Reader, model string) (*models.ResponsesResponse, error) {
+	// Wrap the reader so that closing it unblocks a stuck ReadString when the
+	// parent context expires.  The real http.Response.Body is a ReadCloser,
+	// so closing it causes ReadString to return immediately with io.EOF (or a
+	// "use of closed network connection" error that we treat the same way).
+	if rc, ok := body.(interface{ Close() error }); ok {
+		go func() {
+			<-ctx.Done()
+			_ = rc.Close()
+		}()
+	}
+
 	reader := bufio.NewReader(body)
 	var outputText strings.Builder
 	var usage *models.ResponsesUsage
 
 	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			break
@@ -468,9 +573,9 @@ func collectSSEStream(body io.Reader, model string) (*models.ResponsesResponse, 
 }
 
 func randomHex(n int) string {
-	b := make([]byte, n/2+1)
-	for i := range b {
-		b[i] = "0123456789abcdef"[(time.Now().UnixNano()+int64(i))%16]
+	b := make([]byte, n/2+n%2)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
 	}
-	return fmt.Sprintf("%x", b)[:n]
+	return hex.EncodeToString(b)[:n]
 }

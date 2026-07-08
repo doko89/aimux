@@ -16,7 +16,7 @@ import (
 )
 
 func (s *server) handleResponses(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "cannot read body")
 		return
@@ -131,7 +131,7 @@ func (s *server) handleAggregatedResponse(w http.ResponseWriter, r *http.Request
 	remaining := candidates
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}
@@ -189,7 +189,7 @@ func (s *server) handleAggregatedResponsesStream(w http.ResponseWriter, r *http.
 	remaining := candidates
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}

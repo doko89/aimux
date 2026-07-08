@@ -1,0 +1,78 @@
+# aimux config — example template. Copy to config.yaml and fill in real values.
+# NEVER commit real API keys. config.yaml is gitignored.
+# If you previously committed secrets, rotate them and purge from git history.
+
+gateway:
+    host: 0.0.0.0
+    port: 8081
+    debug: false
+routing:
+    strategy: weighted
+    fallback_on_error: true
+    max_retries: 2
+circuit_breaker:
+    failure_threshold: 5
+    cooldown_seconds: 60
+    health_check_interval: 30
+rate_limiting:
+    enabled: true
+    rpm: 100
+    burst: 20
+client_keys:
+    - key: ak-REPLACE_WITH_YOUR_CLIENT_KEY
+      name: dev
+providers:
+    - name: mimo
+      enabled: true
+      base_url: https://token-plan-sgp.xiaomimimo.com/v1
+      api_key: tp-REPLACE_WITH_YOUR_PROVIDER_KEY
+      model: mimo-v2.5
+      available_models:
+        - mimo-v2.5
+        - mimo-v2.5-pro
+      weight: 10
+      priority: 6
+      timeout: 120
+    - name: zai
+      enabled: true
+      base_url: https://api.z.ai/api/coding/paas/v4
+      api_key: REPLACE_WITH_YOUR_PROVIDER_KEY
+      model: glm-4.5
+      available_models:
+        - glm-4.5
+        - glm-5
+      weight: 10
+      priority: 6
+      timeout: 120
+    - name: oc1
+      enabled: true
+      base_url: https://opencode.ai/zen/v1
+      api_key: sk-REPLACE_WITH_YOUR_PROVIDER_KEY
+      model: deepseek-v4-flash-free
+      available_models:
+        - deepseek-v4-flash-free
+      weight: 10
+      priority: 6
+      timeout: 120
+model_aggregations:
+    - name: flash
+      strategy: round_robin
+      models:
+        - provider: zai
+          model: glm-5
+          weight: 50
+        - provider: mimo
+          model: mimo-v2.5
+          weight: 50
+        - provider: oc1
+          model: deepseek-v4-flash-free
+          weight: 50
+    - name: pro
+      strategy: round_robin
+      models:
+        - provider: mimo
+          model: mimo-v2.5-pro
+          weight: 50
+        - provider: zai
+          model: glm-5
+          weight: 50
