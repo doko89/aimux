@@ -104,7 +104,7 @@ func main() {
 			login.Run(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("aimux v0.1.4")
+			fmt.Println("aimux v0.1.5")
 			return
 		case "help", "--help", "-h":
 			printUsage()
