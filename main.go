@@ -8,8 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,6 +28,10 @@ import (
 	"ai-router/internal/setup"
 )
 
+// maxBodyBytes caps the size of an inbound request body. Prevents a single
+// oversized request from exhausting server memory (DoS).
+const maxBodyBytes int64 = 10 << 20 // 10 MiB
+
 type server struct {
 	cfg           *config.Config
 	engine        *router.Engine
@@ -39,6 +46,17 @@ type server struct {
 type aggregationState struct {
 	Config  config.ModelAggregation
 	RRIndex int
+	// mu guards RRIndex, which is read-then-incremented by SelectCandidate
+	// on every concurrent request routed to this aggregation.
+	mu sync.Mutex
+}
+
+// selectCandidateLocked serializes provider selection so the round-robin
+// counter is not raced across concurrent requests sharing aggAS.
+func (a *aggregationState) selectCandidateLocked(candidates []router.Candidate, strat router.Strategy) (*router.Candidate, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return router.SelectCandidate(candidates, strat, &a.RRIndex)
 }
 
 func main() {
@@ -181,9 +199,39 @@ func startServer() {
 
 	addr := cfg.Gateway.Host + ":" + strconv.Itoa(cfg.Gateway.Port)
 	log.Printf("AI API Gateway listening on %s (strategy=%s, providers=%d)", addr, strategy, len(routerProviders))
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatalf("server error: %v", err)
+
+	httpSrv := &http.Server{
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// Listen for interrupt / termination signals and shut down gracefully so
+	// in-flight (especially streaming) requests can drain instead of being
+	// severed mid-response.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		log.Fatalf("server error: %v", err)
+	case sig := <-stop:
+		log.Printf("received %s, shutting down...", sig)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
+	monitor.Stop()
+	log.Printf("server stopped")
 }
 
 // ---- Middleware ----
@@ -227,7 +275,7 @@ func (s *server) rateLimitMiddleware(next http.Handler) http.Handler {
 // ---- Handlers ----
 
 func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "cannot read body")
 		return
@@ -396,7 +444,7 @@ func (s *server) handleAggregatedNonStream(w http.ResponseWriter, r *http.Reques
 	remaining := candidates
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}
@@ -446,7 +494,7 @@ func (s *server) handleAggregatedStream(w http.ResponseWriter, r *http.Request, 
 	committed := false
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}
@@ -595,7 +643,7 @@ func (s *server) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "cannot read body")
 		return
@@ -666,9 +714,13 @@ func (s *server) handleChatStream(w http.ResponseWriter, r *http.Request, openai
 			}
 			continue
 		}
-		writeStreamSSE(ch, p.Model, fw)
+		streamErr := writeStreamSSE(ch, p.Model, fw)
 		latency := float64(time.Since(start).Microseconds()) / 1000.0
-		s.engine.RecordSuccess(p, latency)
+		if streamErr == nil {
+			s.engine.RecordSuccess(p, latency)
+		} else {
+			s.engine.RecordFailure(p, true)
+		}
 		committed = true
 		break
 	}
@@ -685,7 +737,7 @@ func (s *server) handleAggregatedChatNonStream(w http.ResponseWriter, r *http.Re
 	remaining := candidates
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}
@@ -731,7 +783,7 @@ func (s *server) handleAggregatedChatStream(w http.ResponseWriter, r *http.Reque
 	committed := false
 
 	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := router.SelectCandidate(remaining, strat, &aggAS.RRIndex)
+		c, err := aggAS.selectCandidateLocked(remaining, strat)
 		if err != nil {
 			break
 		}
@@ -748,9 +800,13 @@ func (s *server) handleAggregatedChatStream(w http.ResponseWriter, r *http.Reque
 			remaining = filterCandidates(remaining, c.Provider.Name)
 			continue
 		}
-		writeStreamSSE(ch, c.Model, fw)
+		streamErr := writeStreamSSE(ch, c.Model, fw)
 		latency := float64(time.Since(start).Microseconds()) / 1000.0
-		s.engine.RecordSuccess(c.Provider, latency)
+		if streamErr == nil {
+			s.engine.RecordSuccess(c.Provider, latency)
+		} else {
+			s.engine.RecordFailure(c.Provider, true)
+		}
 		committed = true
 		break
 	}
@@ -760,18 +816,34 @@ func (s *server) handleAggregatedChatStream(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-func writeStreamSSE(chunks <-chan models.ChatCompletionChunk, model string, w io.Writer) {
+// writeStreamSSE forwards OpenAI-style SSE chunks to the client. It returns the
+// first error encountered while marshalling or writing a frame, so callers can
+// avoid recording a false success when the stream fails mid-flight.
+func writeStreamSSE(chunks <-chan models.ChatCompletionChunk, model string, w io.Writer) error {
+	var firstErr error
 	for chunk := range chunks {
 		if chunk.Model == "" {
 			chunk.Model = model
 		}
 		data, err := json.Marshal(chunk)
 		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-		fmt.Fprintf(w, "data: %s\n\n", data)
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			// Writer is broken; no point continuing.
+			return firstErr
+		}
 	}
-	fmt.Fprintf(w, "data: [DONE]\n\n")
+	if _, err := fmt.Fprintf(w, "data: [DONE]\n\n"); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	return firstErr
 }
 
 // ---- Helpers ----

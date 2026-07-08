@@ -285,7 +285,7 @@ func (p *Provider) HealthUnhealthy(threshold int) {
 	defer p.mu.Unlock()
 	p.consecutiveFailures++
 	p.lastFailureTime = time.Now()
-	if p.consecutiveFailures >= threshold && p.circuitState == StateClosed {
+	if p.consecutiveFailures >= threshold && (p.circuitState == StateClosed || p.circuitState == StateHalfOpen) {
 		p.circuitState = StateOpen
 	}
 }

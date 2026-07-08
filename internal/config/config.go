@@ -252,6 +252,7 @@ func (c *Config) overlayYAML(path string) error {
 				MaxRPM:           p.MaxRPM,
 				FailureThreshold: p.FailureThreshold,
 				CooldownSeconds:  p.CooldownSeconds,
+				AutoModel:        p.AutoModel,
 			})
 		}
 	}

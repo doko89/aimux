@@ -18,6 +18,11 @@ type bucket struct {
 	last   time.Time
 }
 
+// bucketIdleTTL is how long a bucket may sit unused before it is eligible for
+// eviction. Keeps the buckets map bounded under a high cardinality of keys
+// (rotating API keys, many client IPs).
+const bucketIdleTTL = 10 * time.Minute
+
 // NewLimiter creates a limiter allowing rpm requests per minute with the given
 // burst capacity.
 func NewLimiter(rpm, burst int) *Limiter {
@@ -55,9 +60,26 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	b.last = now
 
+	// Opportunistic eviction: clear a few stale buckets every so often so the
+	// map does not grow without bound under high-cardinality keys.
+	if len(l.buckets) > 256 {
+		l.evictStaleLocked(now)
+	}
+
 	if b.tokens >= 1 {
 		b.tokens -= 1
 		return true
 	}
 	return false
+}
+
+// evictStaleLocked removes buckets that have been idle longer than
+// bucketIdleTTL. Caller must hold l.mu.
+func (l *Limiter) evictStaleLocked(now time.Time) {
+	cutoff := now.Add(-bucketIdleTTL)
+	for k, b := range l.buckets {
+		if b.last.Before(cutoff) {
+			delete(l.buckets, k)
+		}
+	}
 }
