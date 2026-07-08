@@ -31,11 +31,12 @@ type ClientKey struct {
 
 // MCPServerSetup wraps MCP server config for setup editing.
 type MCPServerSetup struct {
-	Name       string
-	URL        string
-	Enabled    bool
-	Timeout    int
-	ToolPrefix string
+	Name        string
+	URL         string
+	Enabled     bool
+	Timeout     int
+	ToolPrefix  string
+	BearerToken string
 }
 
 // ProviderSetup wraps ProviderConfig for setup editing.
@@ -103,11 +104,12 @@ type yamlFullConfig struct {
 }
 
 type yamlMCPConfig struct {
-	Name       string `yaml:"name"`
-	URL        string `yaml:"url"`
-	Enabled    bool   `yaml:"enabled"`
-	Timeout    int    `yaml:"timeout"`
-	ToolPrefix string `yaml:"tool_prefix"`
+	Name        string `yaml:"name"`
+	URL         string `yaml:"url"`
+	Enabled     bool   `yaml:"enabled"`
+	Timeout     int    `yaml:"timeout"`
+	ToolPrefix  string `yaml:"tool_prefix"`
+	BearerToken string `yaml:"bearer_token"`
 }
 
 // yamlNode is a flexible type that can unmarshal from either a string or an object.
@@ -270,11 +272,12 @@ func LoadFromExisting() *SetupConfig {
 			timeout = 10
 		}
 		mcpServers = append(mcpServers, MCPServerSetup{
-			Name:       ms.Name,
-			URL:        ms.URL,
-			Enabled:    ms.Enabled,
-			Timeout:    timeout,
-			ToolPrefix: ms.ToolPrefix,
+			Name:        ms.Name,
+			URL:         ms.URL,
+			Enabled:     ms.Enabled,
+			Timeout:     timeout,
+			ToolPrefix:  ms.ToolPrefix,
+			BearerToken: ms.BearerToken,
 		})
 	}
 
@@ -383,11 +386,12 @@ func saveConfigYAML(sc *SetupConfig, dir string) error {
 			continue
 		}
 		cfg.MCPServers = append(cfg.MCPServers, yamlMCPConfig{
-			Name:       ms.Name,
-			URL:        ms.URL,
-			Enabled:    ms.Enabled,
-			Timeout:    ms.Timeout,
-			ToolPrefix: ms.ToolPrefix,
+			Name:        ms.Name,
+			URL:         ms.URL,
+			Enabled:     ms.Enabled,
+			Timeout:     ms.Timeout,
+			ToolPrefix:  ms.ToolPrefix,
+			BearerToken: ms.BearerToken,
 		})
 	}
 

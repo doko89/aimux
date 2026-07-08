@@ -78,11 +78,12 @@ type MCPConfig struct {
 
 // MCPServerConfig describes a single MCP server.
 type MCPServerConfig struct {
-	Name       string
-	URL        string
-	Enabled    bool
-	Timeout    int
-	ToolPrefix string
+	Name        string
+	URL         string
+	Enabled     bool
+	Timeout     int
+	ToolPrefix  string
+	BearerToken string // optional bearer token for authentication (supports ${ENV_VAR})
 }
 
 // ProviderConfig describes a single AI provider.
@@ -398,11 +399,12 @@ func loadFromYAML() (*Config, error) {
 			} `yaml:"models"`
 		} `yaml:"model_aggregations"`
 		MCPServers []struct {
-			Name       string `yaml:"name"`
-			URL        string `yaml:"url"`
-			Enabled    bool   `yaml:"enabled"`
-			Timeout    int    `yaml:"timeout"`
-			ToolPrefix string `yaml:"tool_prefix"`
+			Name        string `yaml:"name"`
+			URL         string `yaml:"url"`
+			Enabled     bool   `yaml:"enabled"`
+			Timeout     int    `yaml:"timeout"`
+			ToolPrefix  string `yaml:"tool_prefix"`
+			BearerToken string `yaml:"bearer_token"`
 		} `yaml:"mcp_servers"`
 	}
 
@@ -470,11 +472,12 @@ func loadFromYAML() (*Config, error) {
 			timeout = 10
 		}
 		cfg.MCP.Servers = append(cfg.MCP.Servers, MCPServerConfig{
-			Name:       s.Name,
-			URL:        expandEnv(s.URL),
-			Enabled:    s.Enabled,
-			Timeout:    timeout,
-			ToolPrefix: s.ToolPrefix,
+			Name:        s.Name,
+			URL:         expandEnv(s.URL),
+			Enabled:     s.Enabled,
+			Timeout:     timeout,
+			ToolPrefix:  s.ToolPrefix,
+			BearerToken: expandEnv(s.BearerToken),
 		})
 	}
 

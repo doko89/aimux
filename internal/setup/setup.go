@@ -66,12 +66,13 @@ func Run() {
 type appModel struct {
 	cfg           *SetupConfig
 	sidebarFocus  bool
-	activeTab     int // 0=auth, 1=agg, 2=credential, 3=settings
+	activeTab     int // 0=auth, 1=agg, 2=credential, 3=settings, 4=mcp
 	sidebarCursor int
 	auth          authPageModel
 	agg           aggregatorPageModel
 	credential    credentialPageModel
 	settings      settingsPageModel
+	mcp           mcpPageModel
 }
 
 func newAppModel(cfg *SetupConfig) appModel {
@@ -83,6 +84,7 @@ func newAppModel(cfg *SetupConfig) appModel {
 		agg:          newAggregatorPage(cfg),
 		credential:   newCredentialPage(cfg),
 		settings:     newSettingsPage(cfg),
+		mcp:          newMCPPage(cfg),
 	}
 }
 
@@ -106,6 +108,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Save settings when leaving content
 		if !m.sidebarFocus && m.activeTab == 3 {
 			m.settings.savePage()
+		}
+		if !m.sidebarFocus && m.activeTab == 4 {
+			m.mcp.saveExpand()
 		}
 		m.sidebarFocus = !m.sidebarFocus
 		return m, nil
@@ -143,6 +148,8 @@ func (m appModel) isEditing() bool {
 		return m.credential.expanded >= 0
 	case 3:
 		return false
+	case 4:
+		return m.mcp.expanded >= 0
 	}
 	return false
 }
@@ -155,7 +162,7 @@ func (m appModel) updateSidebar(key string) (tea.Model, tea.Cmd) {
 			m.activeTab = m.sidebarCursor
 		}
 	case "down", "j":
-		if m.sidebarCursor < 3 {
+		if m.sidebarCursor < 4 {
 			m.sidebarCursor++
 			m.activeTab = m.sidebarCursor
 		}
@@ -176,12 +183,14 @@ func (m appModel) routeToPage(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.credential, cmd = m.credential.update(msg, m.cfg)
 	case 3:
 		m.settings, cmd = m.settings.update(msg, m.cfg)
+	case 4:
+		m.mcp, cmd = m.mcp.update(msg, m.cfg)
 	}
 	return m, cmd
 }
 
 func (m appModel) View() string {
-	tabs := []string{" Auth ", " Aggregator ", " Credential ", " Settings "}
+	tabs := []string{" Auth ", " Aggregator ", " Credential ", " Settings ", " MCP "}
 	var sidebar string
 	sidebar += "\n  aimux setup\n\n"
 	for i, t := range tabs {
@@ -216,6 +225,8 @@ func (m appModel) View() string {
 		content = m.credential.View()
 	case 3:
 		content = m.settings.View()
+	case 4:
+		content = m.mcp.View()
 	}
 
 	sb := sidebarStyle

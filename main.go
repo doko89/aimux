@@ -391,10 +391,9 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
 	debugLog("direct non-stream request: model=%s", openaiReq.Model)
-	const maxMCPSteps = 10
 	ctx := r.Context()
 
-	for step := range maxMCPSteps {
+	for step := range maxMCPLoopSteps {
 		resp, usedProvider, err := s.engine.Execute(ctx, *openaiReq)
 		if err != nil {
 			debugLog("direct non-stream error: %v", err)
@@ -817,9 +816,8 @@ func (s *server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 func (s *server) handleChatCompletionsNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
 	ctx := r.Context()
-	const maxMCPSteps = 10
 
-	for step := range maxMCPSteps {
+	for step := range maxMCPLoopSteps {
 		resp, usedProvider, err := s.engine.Execute(ctx, *openaiReq)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "api_error", err.Error())
