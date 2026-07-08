@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -300,11 +301,38 @@ func parseStringList(s string) []string {
 
 // hasAggregation reports whether an aggregation with the given name exists.
 
+// configSearchPaths returns candidate locations for config.yaml, ordered by
+// priority: current working directory first, then the directory that contains
+// the running executable.  On Windows users often launch the binary from
+// Explorer or a shortcut whose CWD differs from the binary's location, so
+// searching the exe directory is essential.
+func configSearchPaths() []string {
+	paths := []string{"config.yaml"}
+	if exe, err := os.Executable(); err == nil {
+		paths = append(paths, filepath.Join(filepath.Dir(exe), "config.yaml"))
+	}
+	return paths
+}
+
+// LoadedFrom records the path of the config.yaml that was successfully loaded
+// (empty if none loaded yet). Used for startup logging and diagnostics.
+var LoadedFrom string
+
 // loadFromYAML reads config.yaml and populates Config.
 func loadFromYAML() (*Config, error) {
-	data, err := os.ReadFile("config.yaml")
-	if err != nil {
-		return nil, err
+	var data []byte
+	var lastErr error
+	for _, path := range configSearchPaths() {
+		d, err := os.ReadFile(path)
+		if err == nil {
+			data = d
+			LoadedFrom = path
+			break
+		}
+		lastErr = err
+	}
+	if data == nil {
+		return nil, lastErr
 	}
 
 	var yc struct {

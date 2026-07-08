@@ -93,7 +93,12 @@ func main() {
 func startServer() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("config error: %v", err)
+		log.Fatalf("config error: %v — searched: cwd=%s, exe=%s", err,
+			func() string { cwd, _ := os.Getwd(); return cwd }(),
+			func() string { exe, _ := os.Executable(); return exe }())
+	}
+	if config.LoadedFrom != "" {
+		log.Printf("[config] loaded from %s", config.LoadedFrom)
 	}
 
 	reqConverter := converters.NewAnthropicToOpenAIConverter(cfg.ModelMapping)
@@ -185,17 +190,23 @@ func startServer() {
 	monitor.Start()
 
 	r := chi.NewRouter()
-	r.Use(srv.authMiddleware)
-	r.Use(srv.rateLimitMiddleware)
 
-	r.Post("/v1/messages", srv.handleMessages)
-	r.Post("/v1/messages/count_tokens", srv.handleCountTokens)
-	r.Post("/v1/chat/completions", srv.handleChatCompletions)
-	r.Post("/v1/responses", srv.handleResponses)
+	// Public endpoints — no auth required (model discovery and health probes).
 	r.Get("/v1/models", srv.handleModels)
 	r.Get("/health", srv.handleHealth)
-	r.Get("/health/providers", srv.handleProviderHealth)
-	r.Get("/admin/stats", srv.handleStats)
+
+	// Protected endpoints — require a valid API key when keys are configured.
+	r.Group(func(r chi.Router) {
+		r.Use(srv.authMiddleware)
+		r.Use(srv.rateLimitMiddleware)
+
+		r.Post("/v1/messages", srv.handleMessages)
+		r.Post("/v1/messages/count_tokens", srv.handleCountTokens)
+		r.Post("/v1/chat/completions", srv.handleChatCompletions)
+		r.Post("/v1/responses", srv.handleResponses)
+		r.Get("/health/providers", srv.handleProviderHealth)
+		r.Get("/admin/stats", srv.handleStats)
+	})
 
 	addr := cfg.Gateway.Host + ":" + strconv.Itoa(cfg.Gateway.Port)
 	log.Printf("AI API Gateway listening on %s (strategy=%s, providers=%d)", addr, strategy, len(routerProviders))

@@ -26,4 +26,5 @@ Thumbs.db
 *.test
 *.test.exe
 *.out
-.swp
+*.swp
+*.swo

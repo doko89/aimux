@@ -34,11 +34,15 @@ type ProviderSetup struct {
 	config.ProviderConfig
 }
 
-// mkInput creates a textinput.Model with value and placeholder set.
+// mkInput creates a textinput.Model with value, placeholder, and a sensible
+// width/char-limit so that pasted long strings scroll within the field boundary
+// instead of visually overflowing into adjacent UI elements.
 func mkInput(val, placeholder string) textinput.Model {
 	t := textinput.New()
 	t.SetValue(val)
 	t.Placeholder = placeholder
+	t.CharLimit = 2048
+	t.Width = 50
 	return t
 }
 
