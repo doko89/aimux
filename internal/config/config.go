@@ -401,7 +401,7 @@ func loadFromYAML() (*Config, error) {
 		MCPServers []struct {
 			Name        string `yaml:"name"`
 			URL         string `yaml:"url"`
-			Enabled     bool   `yaml:"enabled"`
+			Enabled     *bool  `yaml:"enabled"`
 			Timeout     int    `yaml:"timeout"`
 			ToolPrefix  string `yaml:"tool_prefix"`
 			BearerToken string `yaml:"bearer_token"`
@@ -467,6 +467,10 @@ func loadFromYAML() (*Config, error) {
 		if s.Name == "" {
 			continue
 		}
+		enabled := true
+		if s.Enabled != nil {
+			enabled = *s.Enabled
+		}
 		timeout := s.Timeout
 		if timeout <= 0 {
 			timeout = 10
@@ -474,7 +478,7 @@ func loadFromYAML() (*Config, error) {
 		cfg.MCP.Servers = append(cfg.MCP.Servers, MCPServerConfig{
 			Name:        s.Name,
 			URL:         expandEnv(s.URL),
-			Enabled:     s.Enabled,
+			Enabled:     enabled,
 			Timeout:     timeout,
 			ToolPrefix:  s.ToolPrefix,
 			BearerToken: expandEnv(s.BearerToken),
