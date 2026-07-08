@@ -20,12 +20,22 @@ type SetupConfig struct {
 	CircuitBreaker config.CircuitBreakerConfig
 	RateLimit      config.RateLimitConfig
 	ClientKeys     []ClientKey
+	MCPServers     []MCPServerSetup
 }
 
 // ClientKey is a named client API key.
 type ClientKey struct {
 	Name string `yaml:"name"`
 	Key  string `yaml:"key"`
+}
+
+// MCPServerSetup wraps MCP server config for setup editing.
+type MCPServerSetup struct {
+	Name       string
+	URL        string
+	Enabled    bool
+	Timeout    int
+	ToolPrefix string
 }
 
 // ProviderSetup wraps ProviderConfig for setup editing.
@@ -42,7 +52,7 @@ func mkInput(val, placeholder string) textinput.Model {
 	t.SetValue(val)
 	t.Placeholder = placeholder
 	t.CharLimit = 2048
-	t.Width = 50
+	t.Width = 40
 	return t
 }
 
@@ -86,9 +96,18 @@ type yamlFullConfig struct {
 		RPM     int  `yaml:"rpm"`
 		Burst   int  `yaml:"burst"`
 	} `yaml:"rate_limiting"`
-	ClientKeys yamlNode `yaml:"client_keys"`
+	ClientKeys   yamlNode        `yaml:"client_keys"`
 	Providers    []yamlProvConfig `yaml:"providers"`
 	Aggregations []yamlAggConfig  `yaml:"model_aggregations"`
+	MCPServers   []yamlMCPConfig  `yaml:"mcp_servers"`
+}
+
+type yamlMCPConfig struct {
+	Name       string `yaml:"name"`
+	URL        string `yaml:"url"`
+	Enabled    bool   `yaml:"enabled"`
+	Timeout    int    `yaml:"timeout"`
+	ToolPrefix string `yaml:"tool_prefix"`
 }
 
 // yamlNode is a flexible type that can unmarshal from either a string or an object.
@@ -241,6 +260,24 @@ func LoadFromExisting() *SetupConfig {
 		aggs = append(aggs, agg)
 	}
 
+	var mcpServers []MCPServerSetup
+	for _, ms := range yc.MCPServers {
+		if ms.Name == "" {
+			continue
+		}
+		timeout := ms.Timeout
+		if timeout <= 0 {
+			timeout = 10
+		}
+		mcpServers = append(mcpServers, MCPServerSetup{
+			Name:       ms.Name,
+			URL:        ms.URL,
+			Enabled:    ms.Enabled,
+			Timeout:    timeout,
+			ToolPrefix: ms.ToolPrefix,
+		})
+	}
+
 	return &SetupConfig{
 		Gateway: config.GatewayConfig{
 			Host:  yc.Gateway.Host,
@@ -265,6 +302,7 @@ func LoadFromExisting() *SetupConfig {
 			Burst:   yc.RateLimiting.Burst,
 		},
 		ClientKeys: yc.ClientKeys.ToClientKeys(),
+		MCPServers: mcpServers,
 	}
 }
 
@@ -338,6 +376,19 @@ func saveConfigYAML(sc *SetupConfig, dir string) error {
 			})
 		}
 		cfg.Aggregations = append(cfg.Aggregations, ya)
+	}
+
+	for _, ms := range sc.MCPServers {
+		if ms.Name == "" {
+			continue
+		}
+		cfg.MCPServers = append(cfg.MCPServers, yamlMCPConfig{
+			Name:       ms.Name,
+			URL:        ms.URL,
+			Enabled:    ms.Enabled,
+			Timeout:    ms.Timeout,
+			ToolPrefix: ms.ToolPrefix,
+		})
 	}
 
 	data, err := yaml.Marshal(&cfg)

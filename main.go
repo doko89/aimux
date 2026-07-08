@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,6 +32,35 @@ import (
 // maxBodyBytes caps the size of an inbound request body. Prevents a single
 // oversized request from exhausting server memory (DoS).
 const maxBodyBytes int64 = 10 << 20 // 10 MiB
+
+// defaultHTTPClient replaces http.DefaultClient with explicit transport
+// timeouts so that connections to upstream AI providers cannot hang forever
+// (notably on Windows where the default dialer can stall indefinitely on
+// certain network configurations or when the system proxy is misconfigured).
+var defaultHTTPClient = &http.Client{
+	Timeout: 5 * time.Minute,
+	Transport: &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   15 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout:  60 * time.Second,
+		IdleConnTimeout:        90 * time.Second,
+		MaxIdleConns:           100,
+		MaxIdleConnsPerHost:    10,
+	},
+}
+
+// debugMode is set to true when gateway.debug: true in config.yaml.
+// debugLog only prints when this flag is active.
+var debugMode bool
+
+func debugLog(format string, args ...interface{}) {
+	if debugMode {
+		log.Printf("[debug] "+format, args...)
+	}
+}
 
 type server struct {
 	cfg           *config.Config
@@ -72,7 +102,7 @@ func main() {
 			login.Run(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("aimux v0.1.2")
+			fmt.Println("aimux v0.1.3")
 			return
 		case "help", "--help", "-h":
 			printUsage()
@@ -99,6 +129,10 @@ func startServer() {
 	}
 	if config.LoadedFrom != "" {
 		log.Printf("[config] loaded from %s", config.LoadedFrom)
+	}
+	if cfg.Gateway.Debug {
+		debugMode = true
+		log.Printf("[config] debug mode enabled")
 	}
 
 	reqConverter := converters.NewAnthropicToOpenAIConverter(cfg.ModelMapping)
@@ -297,9 +331,11 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "invalid JSON: "+err.Error())
 		return
 	}
+	debugLog("POST /v1/messages model=%s stream=%v msgs=%d", req.Model, req.Stream, len(req.Messages))
 
 	// Aggregation model routing.
 	if agg, ok := s.modelAggs[req.Model]; ok {
+		debugLog("model %q routed to aggregation %q", req.Model, agg.Config.Name)
 		openaiReq, err := s.reqConverter.Convert(&req)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
@@ -311,6 +347,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	// Passthrough for native Claude models.
 	if strings.HasPrefix(req.Model, "claude-") && s.passthrough != nil {
+		debugLog("model %q routed to passthrough", req.Model)
 		s.passthroughAnthropic(w, r, body)
 		return
 	}
@@ -330,8 +367,10 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
+	debugLog("direct non-stream request: model=%s", openaiReq.Model)
 	resp, _, err := s.engine.Execute(r.Context(), *openaiReq)
 	if err != nil {
+		debugLog("direct non-stream error: %v", err)
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
@@ -345,6 +384,7 @@ func (s *server) handleNonStream(w http.ResponseWriter, r *http.Request, openaiR
 }
 
 func (s *server) handleStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest) {
+	debugLog("direct stream request: model=%s", openaiReq.Model)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -369,7 +409,9 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request, openaiReq 
 		}
 		start := time.Now()
 		ch, err := p.Client.ChatCompletionStream(ctx, *openaiReq)
+		latency := float64(time.Since(start).Microseconds()) / 1000.0
 		if err != nil {
+			debugLog("stream attempt %d: provider=%s latency=%.1fms err=%v", attempt+1, p.Name, latency, err)
 			attempted[p.Name] = true
 			if pe, ok := err.(*router.ProviderError); ok {
 				s.engine.RecordFailure(p, pe.Retryable)
@@ -378,12 +420,13 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request, openaiReq 
 			}
 			continue
 		}
+		debugLog("stream attempt %d: provider=%s latency=%.1fms stream started", attempt+1, p.Name, latency)
 		// Commit the stream.
 		streamErr := s.respConverter.WriteStream(ch, p.Model, sse)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
 		if streamErr == nil {
 			s.engine.RecordSuccess(p, latency)
 		} else {
+			debugLog("stream write failed: %v", streamErr)
 			s.engine.RecordFailure(p, true)
 		}
 		committed = true
@@ -414,12 +457,14 @@ func (s *server) passthroughAnthropic(w http.ResponseWriter, r *http.Request, bo
 	httpReq.Header.Set("x-api-key", pc.APIKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := defaultHTTPClient.Do(httpReq)
 	if err != nil {
+		debugLog("passthrough request error: %v", err)
 		writeError(w, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 	defer resp.Body.Close()
+	debugLog("passthrough response: status=%d", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
 		w.WriteHeader(resp.StatusCode)
@@ -460,9 +505,11 @@ func (s *server) handleAggregatedNonStream(w http.ResponseWriter, r *http.Reques
 			break
 		}
 		openaiReq.Model = c.Model
+		debugLog("attempt %d: provider=%s model=%s", attempt+1, c.Provider.Name, c.Model)
 		start := time.Now()
 		resp, err := c.Provider.Client.ChatCompletion(ctx, *openaiReq)
 		latency := float64(time.Since(start).Microseconds()) / 1000.0
+		debugLog("attempt %d: latency=%.1fms err=%v", attempt+1, latency, err)
 
 		if err == nil {
 			s.engine.RecordSuccess(c.Provider, latency)
@@ -899,7 +946,7 @@ func resolveAutoModel(pc *config.ProviderConfig) (string, error) {
 	if pc.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+pc.APIKey)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := defaultHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

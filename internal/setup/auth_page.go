@@ -363,7 +363,52 @@ func (m authPageModel) renderField(label string, input textinput.Model, focus in
 	if m.focus == focus {
 		cursor = "▸ "
 	}
-	return cursor + inputLabelStyle.Render(label) + input.View() + "\n"
+	return cursor + inputLabelStyle.Render(label) + clipView(input.View(), 50) + "\n"
+}
+
+// clipView strips ANSI escape sequences from s and truncates the visual
+// content to maxW characters, re-appending the reset sequence if the original
+// string contained ANSI styling. This prevents long styled strings from
+// visually overflowing into adjacent fields on terminals that do not handle
+// ANSI-aware line wrapping (notably some Windows terminals).
+func clipView(s string, maxW int) string {
+	// Fast path: if the string is short enough, return as-is.
+	if len(s) <= maxW {
+		return s
+	}
+	// Strip ANSI for length counting.
+	stripped := stripANSI(s)
+	if len(stripped) <= maxW {
+		return s
+	}
+	// Keep the first maxW visual characters; append reset if needed.
+	truncated := stripped[:maxW] + "…"
+	if strings.Contains(s, "\x1b[") {
+		truncated += "\x1b[0m"
+	}
+	return truncated
+}
+
+// stripANSI removes ANSI escape sequences from a string.
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }
 
 func (m authPageModel) renderButton(label string, focus int, highlight bool) string {

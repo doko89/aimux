@@ -20,6 +20,7 @@ type Config struct {
 	RateLimit          RateLimitConfig
 	Auth               AuthConfig
 	ModelAggregations  []ModelAggregation
+	MCP                MCPConfig
 }
 
 // ModelAggregation defines a virtual model that routes between multiple
@@ -68,6 +69,20 @@ type AuthConfig struct {
 // ValidAPIKeysEmpty reports whether any client keys are configured.
 func (a AuthConfig) ValidAPIKeysEmpty() bool {
 	return len(a.ValidAPIKeys) == 0
+}
+
+// MCPConfig defines MCP client configuration.
+type MCPConfig struct {
+	Servers []MCPServerConfig
+}
+
+// MCPServerConfig describes a single MCP server.
+type MCPServerConfig struct {
+	Name       string
+	URL        string
+	Enabled    bool
+	Timeout    int
+	ToolPrefix string
 }
 
 // ProviderConfig describes a single AI provider.
@@ -382,6 +397,13 @@ func loadFromYAML() (*Config, error) {
 				Weight   int    `yaml:"weight"`
 			} `yaml:"models"`
 		} `yaml:"model_aggregations"`
+		MCPServers []struct {
+			Name       string `yaml:"name"`
+			URL        string `yaml:"url"`
+			Enabled    bool   `yaml:"enabled"`
+			Timeout    int    `yaml:"timeout"`
+			ToolPrefix string `yaml:"tool_prefix"`
+		} `yaml:"mcp_servers"`
 	}
 
 	if err := yaml.Unmarshal(data, &yc); err != nil {
@@ -437,6 +459,23 @@ func loadFromYAML() (*Config, error) {
 			})
 		}
 		cfg.ModelAggregations = append(cfg.ModelAggregations, agg)
+	}
+
+	for _, s := range yc.MCPServers {
+		if s.Name == "" {
+			continue
+		}
+		timeout := s.Timeout
+		if timeout <= 0 {
+			timeout = 10
+		}
+		cfg.MCP.Servers = append(cfg.MCP.Servers, MCPServerConfig{
+			Name:       s.Name,
+			URL:        expandEnv(s.URL),
+			Enabled:    s.Enabled,
+			Timeout:    timeout,
+			ToolPrefix: s.ToolPrefix,
+		})
 	}
 
 	if len(cfg.Providers) == 0 {

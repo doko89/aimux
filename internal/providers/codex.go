@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -44,7 +45,7 @@ func NewCodexProvider(timeout int) (*CodexProvider, error) {
 
 	return &CodexProvider{
 		accountID: token.AccountID,
-		client:    &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		client:    newProviderClient(timeout),
 		token:     token,
 	}, nil
 }
@@ -71,7 +72,7 @@ func (p *CodexProvider) refreshToken() error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := newProviderClient(15).Do(req)
 	if err != nil {
 		return fmt.Errorf("refresh request failed: %w", err)
 	}
@@ -393,6 +394,9 @@ func (p *CodexProvider) ChatCompletionStream(ctx context.Context, req models.Cha
 			}
 			line, err := reader.ReadString('\n')
 			if err != nil {
+				if err != io.EOF {
+					log.Printf("[codex] SSE stream read error: %v", err)
+				}
 				return
 			}
 			line = strings.TrimRight(line, "\r\n")

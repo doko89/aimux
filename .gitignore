@@ -8,6 +8,9 @@ aimux-darwin-amd64
 aimux-darwin-arm64
 aimux.exe
 
+# Build artifacts
+dist/
+
 # Config with secrets
 config.yaml
 aggregation.yaml

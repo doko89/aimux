@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +16,29 @@ import (
 	"ai-router/internal/models"
 	"ai-router/internal/router"
 )
+
+// newProviderClient builds an http.Client with explicit transport-level
+// timeouts so that connections cannot hang forever on slow or misconfigured
+// networks (notably Windows systems with proxy or firewall issues).
+func newProviderClient(timeout int) *http.Client {
+	if timeout <= 0 {
+		timeout = 120
+	}
+	return &http.Client{
+		Timeout: time.Duration(timeout) * time.Second,
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   15 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   15 * time.Second,
+			ResponseHeaderTimeout:  60 * time.Second,
+			IdleConnTimeout:        90 * time.Second,
+			MaxIdleConns:           50,
+			MaxIdleConnsPerHost:    5,
+		},
+	}
+}
 
 // OpenAIProvider is an OpenAI-compatible provider adapter.
 type OpenAIProvider struct {
@@ -24,13 +49,10 @@ type OpenAIProvider struct {
 
 // NewOpenAIProvider builds a provider pointed at an OpenAI-compatible endpoint.
 func NewOpenAIProvider(baseURL, apiKey string, timeout int) *OpenAIProvider {
-	if timeout <= 0 {
-		timeout = 120
-	}
 	return &OpenAIProvider{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
-		client:  &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		client:  newProviderClient(timeout),
 	}
 }
 
@@ -108,10 +130,7 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req models.Ch
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				if err != io.EOF {
-					select {
-					case ch <- models.ChatCompletionChunk{}:
-					default:
-					}
+					log.Printf("[provider:%s] SSE stream read error: %v", p.baseURL, err)
 				}
 				return
 			}

@@ -205,8 +205,8 @@ func (m credentialPageModel) View() string {
 			if m.expanded == i {
 				// Expanded: show edit form inline
 				s += activeTabStyle.Render("▸ "+name) + "\n"
-				s += "    " + inputLabelStyle.Render("Name") + m.nameInput.View() + "\n"
-				s += "    " + inputLabelStyle.Render("Key") + m.keyInput.View() + "\n"
+				s += "    " + inputLabelStyle.Render("Name") + clipView(m.nameInput.View(), 50) + "\n"
+				s += "    " + inputLabelStyle.Render("Key") + clipView(m.keyInput.View(), 50) + "\n"
 				s += "    " + renderButtonStatic("Generate", m.editFocus == 2) + "\n"
 			} else {
 				// Collapsed: cursor + name + full key
