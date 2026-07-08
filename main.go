@@ -104,7 +104,7 @@ func main() {
 			login.Run(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("aimux v0.1.6")
+			fmt.Println("aimux v0.1.7")
 			return
 		case "help", "--help", "-h":
 			printUsage()
@@ -362,6 +362,12 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		// Inject MCP tools so the LLM sees them.
 		if s.mcpMgr != nil {
 			openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
+			// MCP agentic loop only runs in non-streaming handlers.
+			if req.Stream && s.mcpMgr.ToolCount() > 0 {
+				debugLog("MCP tools active: downgrading stream request to non-stream for agentic loop")
+				req.Stream = false
+				openaiReq.Stream = false
+			}
 		}
 		s.handleAggregated(w, r, openaiReq, agg)
 		return
@@ -388,6 +394,16 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Inject MCP tools into the request if available.
 	if s.mcpMgr != nil {
 		openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
+	}
+
+	// MCP agentic loop only runs in non-streaming handlers. If the client
+	// asked for streaming but MCP tools are configured, transparently
+	// downgrade to non-streaming so tool calls get executed and looped.
+	// (The final answer is still returned; only intermediate streaming of
+	// reasoning is lost.)
+	if req.Stream && s.mcpMgr != nil && s.mcpMgr.ToolCount() > 0 {
+		debugLog("MCP tools active: downgrading stream request to non-stream for agentic loop")
+		req.Stream = false
 	}
 
 	if req.Stream {
@@ -616,39 +632,81 @@ func (s *server) handleAggregated(w http.ResponseWriter, r *http.Request, openai
 func (s *server) handleAggregatedNonStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState, candidates []router.Candidate) {
 	ctx := r.Context()
 	strat := router.Strategy(aggAS.Config.Strategy)
-	remaining := candidates
 
-	for attempt := 0; attempt < len(candidates); attempt++ {
-		c, err := aggAS.selectCandidateLocked(remaining, strat)
-		if err != nil {
-			break
-		}
-		openaiReq.Model = c.Model
-		debugLog("attempt %d: provider=%s model=%s", attempt+1, c.Provider.Name, c.Model)
-		start := time.Now()
-		resp, err := c.Provider.Client.ChatCompletion(ctx, *openaiReq)
-		latency := float64(time.Since(start).Microseconds()) / 1000.0
-		debugLog("attempt %d: latency=%.1fms err=%v", attempt+1, latency, err)
+	for step := range maxMCPLoopSteps {
+		remaining := candidates
+		var resp *models.ChatCompletionResponse
+		var success bool
 
-		if err == nil {
-			s.engine.RecordSuccess(c.Provider, latency)
-			anthropicResp, convErr := s.respConverter.ConvertNonStream(resp, c.Model)
-			if convErr != nil {
-				writeError(w, http.StatusInternalServerError, "api_error", convErr.Error())
-				return
+		for attempt := 0; attempt < len(candidates); attempt++ {
+			c, err := aggAS.selectCandidateLocked(remaining, strat)
+			if err != nil {
+				break
 			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(anthropicResp)
+			openaiReq.Model = c.Model
+			debugLog("agg step %d attempt %d: provider=%s model=%s", step+1, attempt+1, c.Provider.Name, c.Model)
+			start := time.Now()
+			rr, perr := c.Provider.Client.ChatCompletion(ctx, *openaiReq)
+			latency := float64(time.Since(start).Microseconds()) / 1000.0
+			debugLog("agg step %d attempt %d: latency=%.1fms err=%v", step+1, attempt+1, latency, perr)
+
+			if perr == nil {
+				s.engine.RecordSuccess(c.Provider, latency)
+				resp = rr
+				success = true
+				break
+			}
+			if pe, ok := perr.(*router.ProviderError); ok {
+				s.engine.RecordFailure(c.Provider, pe.Retryable)
+			} else {
+				s.engine.RecordFailure(c.Provider, true)
+			}
+			remaining = filterCandidates(remaining, c.Provider.Name)
+		}
+
+		if !success {
+			writeError(w, http.StatusBadGateway, "api_error", "all aggregation entries failed")
 			return
 		}
-		if pe, ok := err.(*router.ProviderError); ok {
-			s.engine.RecordFailure(c.Provider, pe.Retryable)
-		} else {
-			s.engine.RecordFailure(c.Provider, true)
+
+		// Check if there are MCP tool calls to intercept (agentic loop).
+		if s.mcpMgr != nil && len(resp.Choices) > 0 {
+			choice := resp.Choices[0]
+			mcpCalls := filterMCPCalls(choice.Message.ToolCalls, s.mcpMgr)
+			if len(mcpCalls) > 0 {
+				debugLog("agg MCP tool call: %d calls, looping", len(mcpCalls))
+				openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+					Role:      "assistant",
+					Content:   choice.Message.Content,
+					ToolCalls: choice.Message.ToolCalls,
+				})
+				for _, tc := range mcpCalls {
+					resultText, _, callErr := s.mcpMgr.CallTool(ctx, tc.Function.Name, tc.Function.Arguments)
+					if callErr != nil {
+						resultText = fmt.Sprintf("MCP tool error: %v", callErr)
+					}
+					openaiReq.Messages = append(openaiReq.Messages, models.ChatMessage{
+						Role:       "tool",
+						ToolCallID: tc.ID,
+						Content:    resultText,
+					})
+				}
+				continue
+			}
 		}
-		remaining = filterCandidates(remaining, c.Provider.Name)
+
+		// No MCP tool calls — return the response.
+		anthropicResp, convErr := s.respConverter.ConvertNonStream(resp, openaiReq.Model)
+		if convErr != nil {
+			writeError(w, http.StatusInternalServerError, "api_error", convErr.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(anthropicResp)
+		return
 	}
-	writeError(w, http.StatusBadGateway, "api_error", "all aggregation entries failed")
+
+	writeError(w, http.StatusInternalServerError, "api_error", "MCP tool loop exceeded maximum steps")
 }
 
 func (s *server) handleAggregatedStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState, candidates []router.Candidate) {
