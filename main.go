@@ -104,7 +104,7 @@ func main() {
 			login.Run(os.Args[2:])
 			return
 		case "version", "--version", "-v":
-			fmt.Println("aimux v0.1.5")
+			fmt.Println("aimux v0.1.6")
 			return
 		case "help", "--help", "-h":
 			printUsage()
@@ -359,6 +359,10 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
 			return
 		}
+		// Inject MCP tools so the LLM sees them.
+		if s.mcpMgr != nil {
+			openaiReq.Tools = append(openaiReq.Tools, s.mcpMgr.GetToolsForRequest()...)
+		}
 		s.handleAggregated(w, r, openaiReq, agg)
 		return
 	}
@@ -366,6 +370,11 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Passthrough for native Claude models.
 	if strings.HasPrefix(req.Model, "claude-") && s.passthrough != nil {
 		debugLog("model %q routed to passthrough", req.Model)
+		// Inject MCP tools into the raw Anthropic body so the upstream
+		// Claude API sees them.
+		if s.mcpMgr != nil {
+			body = injectAnthropicMCPTools(body, s.mcpMgr.GetToolsForAnthropicRequest())
+		}
 		s.passthroughAnthropic(w, r, body)
 		return
 	}
@@ -501,6 +510,38 @@ func (s *server) handleStream(w http.ResponseWriter, r *http.Request, openaiReq 
 			"error": map[string]interface{}{"type": "api_error", "message": "all providers failed"},
 		})
 	}
+}
+
+// injectAnthropicMCPTools merges MCP tools into a raw Anthropic Messages API
+// request body (used by the passthrough path, which forwards the body
+// verbatim to the upstream Claude API).
+func injectAnthropicMCPTools(body []byte, mcpTools []models.Tool) []byte {
+	if len(mcpTools) == 0 {
+		return body
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		debugLog("inject MCP tools: failed to parse body: %v", err)
+		return body
+	}
+
+	// Decode any existing tools so we append rather than overwrite.
+	var existing []models.Tool
+	if eb, ok := raw["tools"]; ok {
+		_ = json.Unmarshal(eb, &existing)
+	}
+	existing = append(existing, mcpTools...)
+	merged, err := json.Marshal(existing)
+	if err != nil {
+		return body
+	}
+	raw["tools"] = merged
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	debugLog("injected %d MCP tools into passthrough body", len(mcpTools))
+	return out
 }
 
 func (s *server) passthroughAnthropic(w http.ResponseWriter, r *http.Request, body []byte) {
