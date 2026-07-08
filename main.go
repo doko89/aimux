@@ -853,17 +853,16 @@ func (s *server) streamFinalAsSSE(sse *converters.SSEWriter, fw *flushingWriter,
 	})
 
 	for i, block := range resp.Content {
+		// Skip tool_use blocks — tools were already executed in the MCP
+		// agentic loop. Streaming them to the client would show raw tool
+		// calls in the chat UI.
+		if block.Type == "tool_use" {
+			continue
+		}
+
 		cb := map[string]interface{}{
 			"type": block.Type,
 			"text": block.Text,
-			"id":   block.ID,
-			"name": block.Name,
-		}
-		if block.Input != nil {
-			var input interface{}
-			if err := json.Unmarshal(block.Input, &input); err == nil {
-				cb["input"] = input
-			}
 		}
 		if block.Thinking != "" {
 			cb["thinking"] = block.Thinking
@@ -888,16 +887,6 @@ func (s *server) streamFinalAsSSE(sse *converters.SSEWriter, fw *flushingWriter,
 				"delta": map[string]interface{}{"type": "thinking_delta", "thinking": block.Thinking},
 			})
 		}
-		if block.Type == "tool_use" {
-			sse.Write("content_block_delta", map[string]interface{}{
-				"type":  "content_block_delta",
-				"index": i,
-				"delta": map[string]interface{}{
-					"type":         "input_json_delta",
-					"partial_json": rawJSONString(block.Input),
-				},
-			})
-		}
 		sse.Write("content_block_stop", map[string]interface{}{
 			"type":  "content_block_stop",
 			"index": i,
@@ -917,15 +906,6 @@ func (s *server) streamFinalAsSSE(sse *converters.SSEWriter, fw *flushingWriter,
 	sse.Write("message_stop", map[string]interface{}{"type": "message_stop"})
 
 	debugLog("streamFinalAsSSE: done")
-}
-
-// rawJSONString converts a json.RawMessage to its string representation.
-// Returns "{}" for nil input to avoid serializing null.
-func rawJSONString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return "{}"
-	}
-	return string(raw)
 }
 
 func (s *server) handleAggregatedStream(w http.ResponseWriter, r *http.Request, openaiReq *models.ChatCompletionRequest, aggAS *aggregationState, candidates []router.Candidate) {
