@@ -223,6 +223,14 @@ func (m *mcpPageModel) blurAll() {
 func (m mcpPageModel) View() string {
 	s := "\n" + inputLabelStyle.Render("MCP Servers") + "\n\n"
 
+	renderField := func(label string, input textinput.Model, focus int, clipW int) string {
+		cursor := "    "
+		if m.editFocus == focus {
+			cursor = "  ▸ "
+		}
+		return cursor + inputLabelStyle.Render(label) + clipView(input.View(), clipW) + "\n"
+	}
+
 	count := len(m.cfg.MCPServers)
 	if count == 0 {
 		s += "  (no MCP servers configured)\n"
@@ -230,16 +238,25 @@ func (m mcpPageModel) View() string {
 		for i, ms := range m.cfg.MCPServers {
 			if m.expanded == i {
 				s += activeTabStyle.Render("▸ "+ms.Name) + "\n"
-				s += "    " + inputLabelStyle.Render("Name") + clipView(m.nameInput.View(), 50) + "\n"
-				s += "    " + inputLabelStyle.Render("URL") + clipView(m.urlInput.View(), 50) + "\n"
-				s += "    " + inputLabelStyle.Render("Token") + clipView(m.tokenInput.View(), 50) + "\n"
-				s += "    " + inputLabelStyle.Render("Timeout(s)") + clipView(m.timeoutInput.View(), 20) + "\n"
-				s += "    " + inputLabelStyle.Render("Prefix") + clipView(m.prefixInput.View(), 30) + "\n"
+				s += renderField("Name", m.nameInput, 0, 50)
+				s += renderField("URL", m.urlInput, 1, 50)
+				s += renderField("Token", m.tokenInput, 2, 50)
+				s += renderField("Timeout(s)", m.timeoutInput, 3, 20)
+				s += renderField("Prefix", m.prefixInput, 4, 30)
 				enStr := "off"
 				if m.enabled {
 					enStr = "on"
 				}
-				s += "    " + inputLabelStyle.Render("Enabled") + enStr + " (space)\n"
+				enCursor := "    "
+				if m.editFocus == 5 {
+					enCursor = "  ▸ "
+				}
+				s += enCursor + inputLabelStyle.Render("Enabled") + enStr + " (space)\n"
+				saveCursor := "    "
+				if m.editFocus == 6 {
+					saveCursor = "  ▸ "
+				}
+				s += saveCursor + renderButtonStatic("Save", m.editFocus == 6) + "\n"
 			} else {
 				cursor := "  "
 				if m.expanded == -1 && m.cursor == i {
